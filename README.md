@@ -20,9 +20,13 @@ You need the following python bindings:
 ```bash
 dnf install -y libvirt-devel python3-devel
 ```
-Then, in the `libvirt-mcp` directory, edit `server_config.json` and set up the
-correct path to the libvirt-mcp server. Then, execute `run.sh`, with `ollama`
-as provider and `granite` as model.
+Then, in the `libvirt-mcp` directory, first install the dependencies by running:
+```bash
+uv sync
+```
+Then, edit `server_config.json` and set up the correct path to the libvirt-mcp
+server. Finally, execute `run.sh`, that uses `ollama` as provider and `granite`
+as model.
 
 For debugging, you can install mcp:
 ```bash
