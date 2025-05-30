@@ -35,5 +35,5 @@ pip install mcp
 ```
 And then, run:
 ```bash
-mcp dev main.py
+mcp dev setup.py
 ```

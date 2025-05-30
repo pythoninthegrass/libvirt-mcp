@@ -2,7 +2,7 @@
 	    "mcpServers": {
 	      "libvirt-demo": {
 		"command": "uv",
-		"args": ["--directory", "/home/mvaralar/Desktop/libvirt-mcp", "run", "main.py"]
+		"args": ["--directory", "/home/mvaralar/Desktop/libvirt-mcp", "run", "server.py"]
 	      }
 	    }
 	  }
