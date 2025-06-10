@@ -80,21 +80,6 @@ def register_handlers(mcp):
         except libvirt.libvirtError as e:
             return f"Libvirt error: {str(e)}"
 
-        vms = {}
-
-        # Get all domains (both active and inactive)
-        for dom in conn.listAllDomains():
-            name = dom.name()
-            is_active = dom.isActive()
-            vms[name] = {
-                'id': dom.ID() if is_active else None,
-                'active': is_active,
-                'uuid': dom.UUIDString()
-            }
-
-        conn.close()
-        return vms
-
         try:
             domain = conn.lookupByName(vm_name)
 
