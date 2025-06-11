@@ -28,6 +28,8 @@ Then, edit `server_config.json` and set up the correct path to the libvirt-mcp
 server. Finally, execute `run.sh`, that uses `ollama` as provider and `granite`
 as model.
 
+![Demo](https://github.com/MatiasVara/libvirt-mcp/wiki/images/libvirt-mcp-demo-claude.gif)
+
 For debugging, you can install mcp:
 ```bash
 dnf install -y npm
