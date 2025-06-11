@@ -64,9 +64,38 @@ def register_handlers(mcp):
         return None
 
     @mcp.tool()
+    def shutdown_vm(vm_name: str):
+        """
+        Shutdown the execution of an existing Virtual Machine(VM) given its name.
+        The VM may ignore the request.
+
+        Args:
+          vm_name: Virtual Machine name.
+
+        Returns:
+           `OK` if successes, `Error` otherwise.
+        """
+        try:
+            conn = libvirt.open("qemu:///system")
+        except libvirt.libvirtError as e:
+            return f"Libvirt error: {str(e)}"
+
+        try:
+            domain = conn.lookupByName(vm_name)
+
+            if domain.isActive():
+                domain.shutdown()
+
+            return "OK"
+        except libvirt.libvirtError as e:
+            print(f"Error: {e}")
+
+        conn.close()
+
+    @mcp.tool()
     def destroy_vm(vm_name: str):
         """
-        Destroy an existing Virtual Machine(VM) given its name. This methos both
+        Destroy an existing Virtual Machine(VM) given its name. This method
         destroys and undefines the VM.
 
         Args:
