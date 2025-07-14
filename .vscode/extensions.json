@@ -1,10 +1,10 @@
 {
   "recommendations": [
-    "aaron-bond.better-comments",
     "charliermarsh.ruff",
     "codezombiech.gitignore",
     "DavidAnson.vscode-markdownlint",
     "eamodio.gitlens",
+    "edwinhuish.better-comments-next",
     "EditorConfig.EditorConfig",
     "foxundermoon.shell-format",
     "GitHub.copilot-chat",
@@ -21,6 +21,6 @@
     "redhat.vscode-yaml",
     "ryu1kn.partial-diff",
     "timonwong.shellcheck",
-    "yzhang.markdown-all-in-one"
+    "yzhang.markdown-all-in-one",
   ]
 }
