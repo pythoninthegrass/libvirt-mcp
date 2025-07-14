@@ -151,6 +151,42 @@ def register_handlers(mcp):
         return f"No IP found for VM '{vm_name}' with MACs: {', '.join(mac_list)}"
 
     @mcp.tool()
+    def start_vm(vm_name: str):
+        """
+        Start an existing Virtual Machine (VM) given its name.
+
+        Args:
+          vm_name: Virtual Machine name.
+
+        Returns:
+           `OK` if success, error message otherwise.
+        """
+        try:
+            conn = libvirt.open(LIBVIRT_DEFAULT_URI)
+        except libvirt.libvirtError as e:
+            return f"Libvirt error: {str(e)}"
+
+        try:
+            domain = conn.lookupByName(vm_name)
+        except libvirt.libvirtError as e:
+            conn.close()
+            return f"VM '{vm_name}' not found: {str(e)}"
+
+        try:
+            # Check if VM is already running
+            if domain.isActive():
+                conn.close()
+                return f"VM '{vm_name}' is already running"
+            
+            # Start the VM
+            domain.create()
+            conn.close()
+            return "OK"
+        except libvirt.libvirtError as e:
+            conn.close()
+            return f"Failed to start VM '{vm_name}': {str(e)}"
+
+    @mcp.tool()
     def shutdown_vm(vm_name: str):
         """
         Shutdown the execution of an existing Virtual Machine(VM) given its name.
