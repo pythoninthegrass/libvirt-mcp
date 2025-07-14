@@ -1,8 +1,11 @@
 import libvirt
 import xml.etree.ElementTree as ET
+from decouple import config
+
+LIBVIRT_DEFAULT_URI = config("LIBVIRT_DEFAULT_URI", default="qemu:///system")
+
 
 def register_handlers(mcp):
-
     # List available resources
     @mcp.resource("list://resources")
     def list_resources() -> dict:
@@ -36,7 +39,7 @@ def register_handlers(mcp):
            IP if successes, `Error` otherwise.
         """
         try:
-            conn = libvirt.open("qemu:///system")
+            conn = libvirt.open(LIBVIRT_DEFAULT_URI)
         except libvirt.libvirtError as e:
             return f"Libvirt error: {str(e)}"
 
@@ -76,7 +79,7 @@ def register_handlers(mcp):
            `OK` if successes, `Error` otherwise.
         """
         try:
-            conn = libvirt.open("qemu:///system")
+            conn = libvirt.open(LIBVIRT_DEFAULT_URI)
         except libvirt.libvirtError as e:
             return f"Libvirt error: {str(e)}"
 
@@ -105,7 +108,7 @@ def register_handlers(mcp):
            `OK` if successes, `Error` otherwise.
         """
         try:
-            conn = libvirt.open("qemu:///system")
+            conn = libvirt.open(LIBVIRT_DEFAULT_URI)
         except libvirt.libvirtError as e:
             return f"Libvirt error: {str(e)}"
 
@@ -136,7 +139,7 @@ def register_handlers(mcp):
           column is the uuid.
         """
         try:
-            conn = libvirt.open("qemu:///system")
+            conn = libvirt.open(LIBVIRT_DEFAULT_URI)
         except libvirt.libvirtError as e:
             return f"Libvirt error: {str(e)}"
 
@@ -170,7 +173,7 @@ def register_handlers(mcp):
           `OK` if success, `Error` otherwise
         """
         try:
-            conn = libvirt.open("qemu:///system")
+            conn = libvirt.open(LIBVIRT_DEFAULT_URI)
         except libvirt.libvirtError as e:
             return f"Libvirt error: {str(e)}"
 
@@ -210,5 +213,3 @@ def register_handlers(mcp):
         domain.create()
         conn.close()
         return "OK"
-
-
