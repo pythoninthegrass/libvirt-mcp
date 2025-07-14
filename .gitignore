@@ -1,5 +1,6 @@
 # ETC
 *server_config.json
+**/sdks/libvirt/**
 
 # General
 .DS_Store
