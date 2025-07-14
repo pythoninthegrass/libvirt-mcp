@@ -151,6 +151,51 @@ def register_handlers(mcp):
         return f"No IP found for VM '{vm_name}' with MACs: {', '.join(mac_list)}"
 
     @mcp.tool()
+    def get_vm_config(vm_name: str) -> str:
+        """
+        Get the complete XML configuration of a Virtual Machine.
+        
+        Args:
+          vm_name: Virtual Machine name.
+          
+        Returns:
+           Complete XML configuration if successful, error message otherwise.
+        """
+        try:
+            conn = libvirt.open(LIBVIRT_DEFAULT_URI)
+        except libvirt.libvirtError as e:
+            return f"Libvirt error: {str(e)}"
+
+        try:
+            domain = conn.lookupByName(vm_name)
+        except libvirt.libvirtError as e:
+            conn.close()
+            return f"VM '{vm_name}' not found: {str(e)}"
+
+        try:
+            # Get the complete XML configuration
+            xml_config = domain.XMLDesc()
+            conn.close()
+            
+            # Pretty-print the XML for better readability
+            try:
+                import xml.dom.minidom
+                dom = xml.dom.minidom.parseString(xml_config)
+                pretty_xml = dom.toprettyxml(indent="  ")
+                # Remove empty lines and the XML declaration for cleaner output
+                lines = [line for line in pretty_xml.split('\n') if line.strip()]
+                if lines and lines[0].startswith('<?xml'):
+                    lines = lines[1:]  # Remove XML declaration
+                return '\n'.join(lines)
+            except Exception:
+                # If pretty-printing fails, return raw XML
+                return xml_config
+                
+        except libvirt.libvirtError as e:
+            conn.close()
+            return f"Failed to get configuration for VM '{vm_name}': {str(e)}"
+
+    @mcp.tool()
     def start_vm(vm_name: str):
         """
         Start an existing Virtual Machine (VM) given its name.
