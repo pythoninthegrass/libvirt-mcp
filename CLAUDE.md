@@ -135,6 +135,25 @@ The architecture prioritizes clean separation between MCP protocol handling and 
 
 - When editing markdown files, always follow `markdownlint -c .markdownlint.jsonc <markdown_file>` linting rules.
 
+## Debugging
+
+- list vms: `virsh list --all`
+- start all stopped vms:
+
+    ```bash
+    for vm in $(virsh list --name --inactive); do
+        virsh start "$vm"
+    done
+    ```
+
+- check apparmor: `sudo dmesg | grep -i apparmor`
+- whitelist libvirt images
+
+    ```bash
+    # /etc/apparmor.d/abstractions/libvirt-qemu
+    /var/lib/libvirt/images-*/** rwk,
+    ```
+
 ## Documentation References
 
 - Use [context7](https://context7.com/libvirt/libvirt/llms.txt) as the primary source
