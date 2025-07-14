@@ -23,8 +23,9 @@ curl -fsSL https://get.pulumi.com | sh
 # Ubuntu/Debian
 curl -fsSL https://get.pulumi.com | sh && sudo mv ~/.pulumi/bin/pulumi /usr/local/bin/
 
-# Add to PATH
-export PATH=$PATH:~/.pulumi/bin
+# Add to PATH 
+# * if in ~/.pulumi/bin
+export PATH="$HOME/.pulumi/bin:$PATH"
 ```
 
 #### 2. Install libvirt and KVM
@@ -83,10 +84,15 @@ sudo systemctl reload apparmor
 
 ### 1. Initialize New Pulumi Project
 
+> [!NOTE]
+> Project is already initialized (cf. `Pulumi.yaml` and `Pulumi.dev.yaml` files). If you want to start from scratch, you can run the following commands:
+
 ```bash
-# Create and navigate to project directory
-mkdir libvirt-vm-cluster
-cd libvirt-vm-cluster
+# Navigate to project directory
+cd examples/pulumi
+
+# Log into pulumi with a local backend
+pulumi login file://~
 
 # Initialize Pulumi project
 pulumi new python --name libvirt-vms --description "libvirt vm ubuntu cluster"
@@ -135,7 +141,8 @@ Replace the contents of `__main__.py` with the provided code from your documents
 
 ### Configure Libvirt Connection
 
-Set the libvirt connection URI:
+Set the local libvirt connection URI:
+
 ```bash
 # For local libvirt (most common)
 export LIBVIRT_DEFAULT_URI="qemu:///system"
@@ -143,6 +150,8 @@ export LIBVIRT_DEFAULT_URI="qemu:///system"
 # Or configure in Pulumi
 pulumi config set libvirt:uri "qemu:///system"
 ```
+
+If you are using a remote libvirt server, set the URI accordingly (e.g., `qemu+ssh://user@host/system`).
 
 ### Optional Configuration Parameters
 

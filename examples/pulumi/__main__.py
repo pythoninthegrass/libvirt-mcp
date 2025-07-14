@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 import base64
 import pulumi
@@ -10,7 +10,7 @@ config = pulumi.Config()
 vm_count = config.get_int("vm_count") or 3
 vm_memory = config.get_int("vm_memory") or 2048  # MB
 vm_vcpus = config.get_int("vm_vcpus") or 2
-base_ip = config.get("base_ip") or "192.168.100"
+base_ip = config.get("base_ip") or "192.168.200"
 ubuntu_image_url = (
     config.get("ubuntu_image_url") or "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
 )
@@ -21,7 +21,7 @@ vm_network = libvirt.Network(
     name="pulumi-vm-network",
     mode="nat",
     domain="vm.local",
-    addresses=["192.168.100.0/24"],
+    addresses=["192.168.200.0/24"],
     dns={
         "enabled": True,
         "local_only": False,
@@ -32,7 +32,11 @@ vm_network = libvirt.Network(
 )
 
 # Create base Ubuntu image volume
-base_volume = libvirt.Volume("ubuntu-base", name="ubuntu-jammy-base", source=ubuntu_image_url, format="qcow2", pool="default")
+base_volume = libvirt.Volume("ubuntu-base",
+                             name="ubuntu-jammy-base",
+                             source=ubuntu_image_url,
+                             format="qcow2",
+                             pool="default")
 
 
 # Cloud-init user data template
@@ -75,7 +79,7 @@ def create_network_data(ip_address):
         dhcp4: false
         addresses:
           - {ip_address}/24
-        gateway4: 192.168.100.1
+        gateway4: 192.168.200.1
         nameservers:
           addresses:
             - 8.8.8.8
@@ -100,14 +104,14 @@ for i in range(vm_count):
         pool="default",
     )
 
-    # Create cloud-init disk
-    cloudinit_disk = libvirt.CloudInitDisk(
-        f"cloudinit-{i + 1}",
-        name=f"cloudinit-{i + 1}.iso",
-        user_data=create_user_data(),
-        network_config=create_network_data(static_ip),
-        pool="default",
-    )
+    # Skip cloud-init for now
+    # cloudinit_disk = libvirt.CloudinitDisk(
+    #     f"cloudinit-{i + 1}",
+    #     name=f"cloudinit-{i + 1}.iso",
+    #     user_data=create_user_data(),
+    #     network_config=create_network_data(static_ip),
+    #     pool="default",
+    # )
 
     # Create the VM domain
     vm = libvirt.Domain(
@@ -129,9 +133,10 @@ for i in range(vm_count):
             {
                 "volume_id": vm_volume.id,
             },
-            {
-                "volume_id": cloudinit_disk.id,
-            },
+            # Skip cloud-init disk for now
+            # {
+            #     "volume_id": cloudinit_disk.id,
+            # },
         ],
         # Console access
         consoles=[
@@ -149,7 +154,7 @@ for i in range(vm_count):
             "autoport": True,
         },
         # Boot configuration
-        boot_devices=["hd"],
+        boot_devices=[{"dev": "hd"}],
         # Machine type
         machine="pc",
         arch="x86_64",
