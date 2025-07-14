@@ -26,4 +26,5 @@
       "files.trimTrailingWhitespace": false,
       "editor.defaultFormatter": "DavidAnson.vscode-markdownlint"
     },
+    "python.terminal.activateEnvironment": false,
 }
