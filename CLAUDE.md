@@ -159,4 +159,7 @@ The architecture prioritizes clean separation between MCP protocol handling and 
 - Use [context7](https://context7.com/libvirt/libvirt/llms.txt) as the primary source
 - python xml api bindings: <https://libvirt.org/python.html>
 - xml format: <https://libvirt.org/format.html>
+- terraform libvirt provider: <https://registry.terraform.io/providers/dmacvicar/libvirt/latest/docs>
+- pulumi libvirt provider: <https://www.pulumi.com/registry/packages/libvirt/>
+- vagrant libvirt provider: <https://context7.com/vagrant-libvirt/vagrant-libvirt/llms.txt>
 - mcp-cli: <https://github.com/chrishayuk/mcp-cli>
