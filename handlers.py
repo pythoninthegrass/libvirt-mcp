@@ -102,7 +102,7 @@ def register_handlers(mcp):
             try:
                 # Get guest agent interfaces
                 ifaces = domain.interfaceAddresses(libvirt.VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_AGENT)
-                for iface_name, iface_data in ifaces.items():
+                for _iface_name, iface_data in ifaces.items():
                     if iface_data.get('addrs'):
                         for addr in iface_data['addrs']:
                             if addr['type'] == libvirt.VIR_IP_ADDR_TYPE_IPV4:
