@@ -257,6 +257,7 @@ dependencies = [
     { name = "mcp", extra = ["cli"] },
     { name = "pulumi" },
     { name = "pulumi-libvirt" },
+    { name = "pulumiverse-talos" },
     { name = "python-decouple" },
 ]
 
@@ -281,6 +282,7 @@ requires-dist = [
     { name = "mcp", extras = ["cli"], specifier = ">=1.7.1" },
     { name = "pulumi", specifier = ">=3.0.0,<4.0.0" },
     { name = "pulumi-libvirt", directory = "examples/pulumi/sdks/libvirt" },
+    { name = "pulumiverse-talos", specifier = ">=0.7.0a1751291198" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.4,<9.0.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.3.3,<9.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.25.2,<1.0.0" },
@@ -430,7 +432,7 @@ wheels = [
 
 [[package]]
 name = "pulumi"
-version = "3.182.0a1752239664"
+version = "3.183.0a1752506244"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "debugpy" },
@@ -442,7 +444,7 @@ dependencies = [
     { name = "semver" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f9/28/92a624f58f13481a26fcc6d1cc26d7631cedb4b85c3f5377c1beb84aa782/pulumi-3.182.0a1752239664-py3-none-any.whl", hash = "sha256:5e77bfd1120104c4f722603da97f75a6d6e399cae1ee0c9430970689f2f4548d", size = 362803, upload-time = "2025-07-11T13:15:22.504Z" },
+    { url = "https://files.pythonhosted.org/packages/34/98/8a5f65b2d896e826d8c1faaf8a0b9b8864af2dd00db20f94667ab7259b7f/pulumi-3.183.0a1752506244-py3-none-any.whl", hash = "sha256:c60177e650e6f973631b769357df6542885d7ac423b3a531e6d9e27f8d70b16a", size = 362803, upload-time = "2025-07-14T15:18:15.603Z" },
 ]
 
 [[package]]
@@ -461,6 +463,20 @@ requires-dist = [
     { name = "pulumi", specifier = ">=3.165.0,<4.0.0" },
     { name = "semver", specifier = ">=2.8.1" },
     { name = "typing-extensions", marker = "python_full_version < '3.11'", specifier = ">=4.11,<5" },
+]
+
+[[package]]
+name = "pulumiverse-talos"
+version = "0.7.0a1751291198"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "parver" },
+    { name = "pulumi" },
+    { name = "semver" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/04/d5/847c64c4c1d3a0d5e13ab1138a3e9af95f7e442beb1c1df205ba6c9ae774/pulumiverse_talos-0.7.0a1751291198.tar.gz", hash = "sha256:3402d756e97499d8f49274fa8acd64ef3582b4ca4d953d046d1b9b81d016ffdb", size = 34369, upload-time = "2025-06-30T13:56:39.877Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3e/70/065bcf75fcef4479bf5a9c4dae1ab2144a8250bea8b603dd306303693ccd/pulumiverse_talos-0.7.0a1751291198-py3-none-any.whl", hash = "sha256:26159694adc585c0e544a600d4d4e485d3acbc728e776808c5687eeb0ded8f23", size = 55493, upload-time = "2025-06-30T13:56:38.578Z" },
 ]
 
 [[package]]
