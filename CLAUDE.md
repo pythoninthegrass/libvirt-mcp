@@ -153,6 +153,28 @@ The architecture prioritizes clean separation between MCP protocol handling and 
     # /etc/apparmor.d/abstractions/libvirt-qemu
     /var/lib/libvirt/images-*/** rwk,
     ```
+- iso permissions: `sudo chown libvirt-qemu:libvirt-qemu /data/libvirt/images/ubuntu-jammy-base`
+
+## Pulumi Commands
+
+```bash
+# Disable passphrase for easy pulumi deployment
+# * Prefix each command (i.e., chain with `&&`) if running in a new shell
+export PULUMI_CONFIG_PASSPHRASE=
+
+# Create a new stack
+pulumi up --yes
+
+# Refresh the stack to apply changes
+pulumi refresh
+
+# Destroy the stack
+pulumi destroy --yes
+
+# Remove the stack
+# ! Deletes Pulumi.dev.yaml
+pulumi stack rm --yes
+```
 
 ## Documentation References
 
