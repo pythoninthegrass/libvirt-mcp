@@ -70,7 +70,28 @@ def register_handlers(mcp):
             conn.close()
             return f"No network interfaces found for VM '{vm_name}'"
 
-        # Method 1: DHCP lease lookup
+        # Method 1: Try libvirt guest agent if available (most accurate for running VMs)
+        if domain.isActive():
+            try:
+                # Get guest agent interfaces
+                ifaces = domain.interfaceAddresses(libvirt.VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_AGENT)
+                for iface_name, iface_data in ifaces.items():
+                    # Skip loopback interface
+                    if iface_name == 'lo' or iface_name.startswith('lo'):
+                        continue
+                    if iface_data.get('addrs'):
+                        for addr in iface_data['addrs']:
+                            if addr['type'] == libvirt.VIR_IP_ADDR_TYPE_IPV4:
+                                ip = addr['addr']
+                                # Skip loopback addresses
+                                if ip != '127.0.0.1' and not ip.startswith('127.'):
+                                    conn.close()
+                                    return f"{ip} (guest agent via {iface_name})"
+            except (libvirt.libvirtError, KeyError):
+                # Guest agent not available or error, continue
+                pass
+
+        # Method 2: DHCP lease lookup
         networks_to_check = []
         if network_name:
             networks_to_check = [network_name]
@@ -96,22 +117,6 @@ def register_handlers(mcp):
             except libvirt.libvirtError:
                 # Network might not exist or have DHCP, continue
                 continue
-
-        # Method 2: Try libvirt guest agent if available
-        if domain.isActive():
-            try:
-                # Get guest agent interfaces
-                ifaces = domain.interfaceAddresses(libvirt.VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_AGENT)
-                for _iface_name, iface_data in ifaces.items():
-                    if iface_data.get('addrs'):
-                        for addr in iface_data['addrs']:
-                            if addr['type'] == libvirt.VIR_IP_ADDR_TYPE_IPV4:
-                                ip = addr['addr']
-                                conn.close()
-                                return f"{ip} (guest agent)"
-            except (libvirt.libvirtError, KeyError):
-                # Guest agent not available or error, continue
-                pass
 
         # Method 3: ARP table lookup (requires subprocess)
         import subprocess
