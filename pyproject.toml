@@ -15,6 +15,7 @@ dependencies = [
     "mcp[cli]>=1.7.1",
     "pulumi>=3.0.0,<4.0.0",
     "pulumi-libvirt",
+    "pulumiverse-talos>=0.7.0a1751291198",
     "python-decouple>=3.8",
 ]
 
