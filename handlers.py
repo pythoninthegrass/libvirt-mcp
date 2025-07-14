@@ -28,43 +28,122 @@ def register_handlers(mcp):
         return f"/var/lib/libvirt/images/{os_name}.qcow2"
 
     @mcp.tool()
-    def get_vm_ip(vm_name, network_name='default'):
+    def get_vm_ip(vm_name, network_name=None):
         """
-        Get IP of a Virtual Machine given its name.
+        Get IP of a Virtual Machine given its name using multiple detection methods.
 
         Args:
           vm_name: Virtual Machine name.
+          network_name: Network name (optional, auto-detects if None).
 
         Returns:
-           IP if successes, `Error` otherwise.
+           IP address if successful, error message otherwise.
         """
         try:
             conn = libvirt.open(LIBVIRT_DEFAULT_URI)
         except libvirt.libvirtError as e:
             return f"Libvirt error: {str(e)}"
 
-        domain = conn.lookupByName(vm_name)
+        try:
+            domain = conn.lookupByName(vm_name)
+        except libvirt.libvirtError as e:
+            conn.close()
+            return f"VM '{vm_name}' not found: {str(e)}"
 
         xml_desc = domain.XMLDesc()
         root = ET.fromstring(xml_desc)
 
-        macs = []
-        for iface in root.findall("./devices/interface/mac"):
-            mac = iface.get('address')
-            if mac:
-                macs.append(mac.lower())
+        # Extract MAC addresses and network information
+        interfaces = []
+        for iface in root.findall("./devices/interface"):
+            mac_elem = iface.find("./mac")
+            source_elem = iface.find("./source")
+            if mac_elem is not None:
+                iface_info = {
+                    'mac': mac_elem.get('address', '').lower(),
+                    'type': iface.get('type'),
+                    'network': source_elem.get('network') if source_elem is not None else None
+                }
+                interfaces.append(iface_info)
 
-        if not macs:
-            return None
+        if not interfaces:
+            conn.close()
+            return f"No network interfaces found for VM '{vm_name}'"
 
-        network = conn.networkLookupByName(network_name)
-        leases = network.DHCPLeases()
+        # Method 1: DHCP lease lookup
+        networks_to_check = []
+        if network_name:
+            networks_to_check = [network_name]
+        else:
+            # Auto-detect networks from VM interfaces
+            for iface in interfaces:
+                if iface['network'] and iface['network'] not in networks_to_check:
+                    networks_to_check.append(iface['network'])
+            # Also check 'default' network as fallback
+            if 'default' not in networks_to_check:
+                networks_to_check.append('default')
 
-        for lease in leases:
-            if lease['mac'].lower() in macs:
-                return lease['ipaddr']
+        # Check DHCP leases in relevant networks
+        for net_name in networks_to_check:
+            try:
+                network = conn.networkLookupByName(net_name)
+                leases = network.DHCPLeases()
+                for lease in leases:
+                    for iface in interfaces:
+                        if lease['mac'].lower() == iface['mac']:
+                            conn.close()
+                            return f"{lease['ipaddr']} (DHCP from {net_name})"
+            except libvirt.libvirtError:
+                # Network might not exist or have DHCP, continue
+                continue
 
-        return None
+        # Method 2: Try libvirt guest agent if available
+        if domain.isActive():
+            try:
+                # Get guest agent interfaces
+                ifaces = domain.interfaceAddresses(libvirt.VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_AGENT)
+                for iface_name, iface_data in ifaces.items():
+                    if iface_data.get('addrs'):
+                        for addr in iface_data['addrs']:
+                            if addr['type'] == libvirt.VIR_IP_ADDR_TYPE_IPV4:
+                                ip = addr['addr']
+                                conn.close()
+                                return f"{ip} (guest agent)"
+            except (libvirt.libvirtError, KeyError):
+                # Guest agent not available or error, continue
+                pass
+
+        # Method 3: ARP table lookup (requires subprocess)
+        import subprocess
+        for iface in interfaces:
+            try:
+                # Check system ARP table for MAC address
+                result = subprocess.run(['arp', '-a'], capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    for line in result.stdout.split('\n'):
+                        if iface['mac'] in line.lower():
+                            # Parse IP from ARP entry like: hostname (192.168.1.100) at aa:bb:cc:dd:ee:ff [ether] on eth0
+                            import re
+                            # Simple but robust IPv4 pattern - extract and validate separately
+                            ip_match = re.search(r'\(([0-9.]+)\)', line)
+                            if ip_match:
+                                ip = ip_match.group(1)
+                                # Validate IP address by checking octets
+                                octets = ip.split('.')
+                                if len(octets) == 4:
+                                    try:
+                                        if all(0 <= int(octet) <= 255 for octet in octets):
+                                            conn.close()
+                                            return f"{ip} (ARP table)"
+                                    except ValueError:
+                                        pass  # Invalid octet, continue
+            except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                # ARP lookup failed, continue
+                continue
+
+        conn.close()
+        mac_list = [iface['mac'] for iface in interfaces]
+        return f"No IP found for VM '{vm_name}' with MACs: {', '.join(mac_list)}"
 
     @mcp.tool()
     def shutdown_vm(vm_name: str):
