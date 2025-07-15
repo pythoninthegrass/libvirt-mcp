@@ -1,7 +1,5 @@
 # ETC
 *server_config.json
-**/sdks/libvirt/**
-**/Pulumi.dev.yaml
 
 # General
 .DS_Store
