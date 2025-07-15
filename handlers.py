@@ -1,6 +1,17 @@
+import base64
+import contextlib
+import hashlib
+import jinja2
 import libvirt
+import os
+import paramiko
+import subprocess
+import tempfile
+import urllib.request
 import xml.etree.ElementTree as ET
 from decouple import config
+from pathlib import Path
+from urllib.parse import urlparse
 
 LIBVIRT_DEFAULT_URI = config("LIBVIRT_DEFAULT_URI", default="qemu:///system")
 
@@ -425,13 +436,13 @@ def register_handlers(mcp):
             conn.defineXML(updated_xml)
 
             conn.close()
-            
+
             # If VM was running before, start it again with the new name
             if was_running:
                 success, start_msg = _start_vm(new_name)
                 if not success:
                     return f"VM renamed successfully but failed to restart: {start_msg}"
-            
+
             return "OK"
 
         except libvirt.libvirtError as e:
@@ -441,22 +452,220 @@ def register_handlers(mcp):
             conn.close()
             return f"Failed to parse XML configuration for VM '{old_name}': {str(e)}"
 
+    def _is_url(path_or_url):
+        """Check if the given string is a URL."""
+        try:
+            parsed = urlparse(path_or_url)
+            return parsed.scheme in ('http', 'https', 'ftp', 'ftps')
+        except:
+            return False
+
+    def _get_cache_path(url):
+        """Generate a cached file path for a URL."""
+        # Create a hash of the URL for the filename
+        url_hash = hashlib.md5(url.encode()).hexdigest()
+        parsed = urlparse(url)
+        filename = os.path.basename(parsed.path)
+        if not filename:
+            filename = f"image_{url_hash}.qcow2"
+
+        # Use libvirt images directory for caching
+        cache_dir = Path("/var/lib/libvirt/images")
+        cache_path = cache_dir / f"cached_{url_hash}_{filename}"
+        return cache_path
+
+    def _download_image(url, cache_path):
+        """Download an image from URL to cache path."""
+        try:
+            # Create cache directory if it doesn't exist
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Download the file
+            with urllib.request.urlopen(url) as response, open(cache_path, 'wb') as f:
+                # Download in chunks to handle large files
+                chunk_size = 8192
+                while True:
+                    chunk = response.read(chunk_size)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+
+            return True, None
+        except Exception as e:
+            return False, f"Failed to download image from {url}: {str(e)}"
+
+    def _resolve_image_path(path_or_url):
+        """Resolve image path, handling URLs and local paths with fallback downloading."""
+        # If it's a URL, handle download/caching
+        if _is_url(path_or_url):
+            cache_path = _get_cache_path(path_or_url)
+
+            # Check if cached version exists
+            if cache_path.exists():
+                return str(cache_path), None
+
+            # Download and cache the image
+            success, error = _download_image(path_or_url, cache_path)
+            if success:
+                return str(cache_path), None
+            else:
+                return None, error
+
+        # It's a local path
+        path = Path(path_or_url)
+
+        # Check if local path exists
+        if path.exists():
+            return str(path), None
+
+        # Local path doesn't exist, cannot proceed
+        return None, f"Local image path does not exist: {path_or_url}"
+
+    def get_ssh_public_key():
+        """Read SSH public key from libvirt host as fallback to GitHub import."""
+        try:
+            # Extract host from LIBVIRT_DEFAULT_URI
+            if "qemu+ssh://" in LIBVIRT_DEFAULT_URI:
+                host = LIBVIRT_DEFAULT_URI.split("qemu+ssh://")[1].split("/")[0]
+                username = host.split("@")[0] if "@" in host else "ubuntu"
+                hostname = host.split("@")[1] if "@" in host else host
+
+                # Connect via SSH to read the public key
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh.connect(hostname, username=username)
+
+                stdin, stdout, stderr = ssh.exec_command("cat ~/.ssh/id_rsa.pub")
+                ssh_key = stdout.read().decode().strip()
+                ssh.close()
+
+                return ssh_key if ssh_key else None
+            else:
+                # Fallback to local key if not using SSH connection
+                ssh_key_path = Path.home() / ".ssh" / "id_rsa.pub"
+                if ssh_key_path.exists():
+                    return ssh_key_path.read_text().strip()
+                return None
+        except Exception:
+            return None
+
+    def _build_ssh_keys_context(ssh_public_key=None, github_ssh_user=None):
+        """Build semantic SSH keys context for Jinja2 template rendering."""
+        ssh_keys_parts = []
+
+        # Add GitHub SSH key import
+        if github_ssh_user:
+            ssh_keys_parts.extend(["ssh_import_id:", f"      - gh:{github_ssh_user}"])
+
+        # Add fallback SSH public key if available
+        if ssh_public_key:
+            ssh_keys_parts.extend(["    ssh_authorized_keys:", f"      - {ssh_public_key}"])
+
+        return "\n".join(ssh_keys_parts)
+
+    def create_cloud_init_user_data(
+        username="admin", password="ubuntu", groups=None, github_ssh_user=None, packages=None, dns_servers=None
+    ):
+        """Create cloud-init user data using Jinja2 template."""
+        if groups is None:
+            groups = ["sudo"]
+        if packages is None:
+            packages = ["curl", "git", "openssh-server", "qemu-guest-agent", "wget"]
+
+        # Get SSH public key as fallback
+        ssh_public_key = get_ssh_public_key()
+
+        # Build ssh_keys section with semantic variables
+        ssh_keys_context = _build_ssh_keys_context(ssh_public_key, github_ssh_user)
+
+        # Load and render template
+        template_path = Path(__file__).parent / "cloud-init.yml.j2"
+        template_loader = jinja2.FileSystemLoader(template_path.parent)
+        template_env = jinja2.Environment(loader=template_loader)
+        template = template_env.get_template("cloud-init.yml.j2")
+
+        user_data = template.render(
+            username=username,
+            password=password,
+            groups=groups,
+            ssh_keys_section=ssh_keys_context,
+            github_ssh_user=github_ssh_user,
+            packages=packages,
+            dns_servers=dns_servers,
+        )
+        return user_data
+
+    def create_cloud_init_iso(vm_name, user_data, meta_data=""):
+        """Create a cloud-init ISO file with user-data and meta-data."""
+        try:
+            # Create temporary directory for cloud-init files
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+
+                # Write user-data file
+                user_data_path = temp_path / "user-data"
+                user_data_path.write_text(user_data)
+
+                # Write meta-data file
+                meta_data_path = temp_path / "meta-data"
+                meta_data_path.write_text(meta_data)
+
+                # Create ISO file path
+                iso_path = f"/var/lib/libvirt/images/{vm_name}-cloudinit.iso"
+
+                # Create ISO using genisoimage or mkisofs
+                iso_cmd = None
+                for cmd in ["genisoimage", "mkisofs"]:
+                    if subprocess.run(["which", cmd], capture_output=True).returncode == 0:
+                        iso_cmd = cmd
+                        break
+
+                if not iso_cmd:
+                    return None, "genisoimage or mkisofs not found. Please install genisoimage package."
+
+                # Create the ISO
+                cmd = [
+                    iso_cmd,
+                    "-output",
+                    iso_path,
+                    "-volid",
+                    "cidata",
+                    "-joliet",
+                    "-rock",
+                    str(user_data_path),
+                    str(meta_data_path),
+                ]
+
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    return None, f"Failed to create ISO: {result.stderr}"
+
+                return iso_path, None
+
+        except Exception as e:
+            return None, f"Failed to create cloud-init ISO: {str(e)}"
+
     @mcp.tool()
     def create_vm(name: str, cores: int, memory: int, path: str, autostart: bool = False) -> str:
         """
         Create a Virtual Machine (VM) with a given name and with a given number of
-        cores and a given amount of memory and using a image in path.
+        cores and a given amount of memory and using a image in path or URL.
 
         Args:
           name: name of the virtual machine
           cores: number of cores
           memory: amount of memory in megabytes
-          path: path to the image for the disk
+          path: path to the image for the disk (can be local path or URL)
           autostart: whether to enable autostart (default: False)
 
         Returns:
           `OK` if success, `Error` otherwise
         """
+        # Resolve the image path (handles URLs and local paths)
+        resolved_path, path_error = _resolve_image_path(path)
+        if path_error:
+            return f"Image resolution failed: {path_error}"
+
         try:
             conn = libvirt.open(LIBVIRT_DEFAULT_URI)
         except libvirt.libvirtError as e:
@@ -476,7 +685,7 @@ def register_handlers(mcp):
           <devices>
             <disk type='file' device='disk'>
               <driver name='qemu' type='qcow2'/>
-              <source file='{path}'/>
+              <source file='{resolved_path}'/>
               <target dev='vda' bus='virtio'/>
             </disk>
             <console type='pty' tty='/dev/pts/2'>
@@ -495,6 +704,125 @@ def register_handlers(mcp):
             return f"Libvirt error: {str(e)}"
 
         # TODO: to check if this fails, e.g., VM already exists
+        # Set autostart for the domain based on parameter
+        domain.setAutostart(autostart)
+
+        conn.close()
+
+        # Use helper function to start the VM
+        success, message = _start_vm(name)
+        return message
+
+    @mcp.tool()
+    def create_vm_with_cloudinit(
+        name: str,
+        cores: int,
+        memory: int,
+        path: str,
+        username: str = "admin",
+        password: str = "ubuntu",
+        groups: list = None,
+        github_ssh_user: str = None,
+        packages: list = None,
+        dns_servers: list = None,
+        autostart: bool = False,
+    ) -> str:
+        """
+        Create a Virtual Machine (VM) with cloud-init support for automated user setup.
+
+        Args:
+          name: name of the virtual machine
+          cores: number of cores
+          memory: amount of memory in megabytes
+          path: path to the image for the disk (can be local path or URL)
+          username: cloud-init username (default: admin)
+          password: cloud-init password (default: ubuntu)
+          groups: user groups list (default: ["sudo"])
+          github_ssh_user: GitHub username for SSH key import (optional)
+          packages: list of packages to install (default: ["curl", "git", "openssh-server", "qemu-guest-agent", "wget"])
+          dns_servers: list of DNS servers to configure (optional)
+          autostart: whether to enable autostart (default: False)
+
+        Returns:
+          `OK` if success, `Error` otherwise
+        """
+        if groups is None:
+            groups = ["sudo"]
+        if packages is None:
+            packages = ["curl", "git", "openssh-server", "qemu-guest-agent", "wget"]
+
+        # Resolve the image path (handles URLs and local paths)
+        resolved_path, path_error = _resolve_image_path(path)
+        if path_error:
+            return f"Image resolution failed: {path_error}"
+
+        try:
+            conn = libvirt.open(LIBVIRT_DEFAULT_URI)
+        except libvirt.libvirtError as e:
+            return f"Libvirt error: {str(e)}"
+
+        # Create cloud-init user data
+        user_data = create_cloud_init_user_data(
+            username=username,
+            password=password,
+            groups=groups,
+            github_ssh_user=github_ssh_user,
+            packages=packages,
+            dns_servers=dns_servers,
+        )
+
+        # Create cloud-init ISO
+        iso_path, iso_error = create_cloud_init_iso(name, user_data)
+        if iso_error:
+            conn.close()
+            return f"Cloud-init ISO creation failed: {iso_error}"
+
+        # Generate a random MAC address for the VM
+        import random
+
+        mac = "52:54:00:" + ":".join([f"{random.randint(0, 255):02x}" for _ in range(3)])
+
+        # XML definition of the VM with cloud-init support
+        domain_xml = f"""
+        <domain type='kvm'>
+          <name>{name}</name>
+          <memory unit='MiB'>{memory}</memory>
+          <vcpu>{cores}</vcpu>
+          <os>
+            <type arch='x86_64'>hvm</type>
+            <boot dev='hd'/>
+          </os>
+          <devices>
+            <disk type='file' device='disk'>
+              <driver name='qemu' type='qcow2'/>
+              <source file='{resolved_path}'/>
+              <target dev='vda' bus='virtio'/>
+            </disk>
+            <disk type='file' device='cdrom'>
+              <driver name='qemu' type='raw'/>
+              <source file='{iso_path}'/>
+              <target dev='hda' bus='ide'/>
+              <readonly/>
+            </disk>
+            <console type='pty' tty='/dev/pts/2'>
+            </console>
+            <interface type='network'>
+              <mac address='{mac}'/>
+              <source network='default'/>
+              <model type='virtio'/>
+            </interface>
+          </devices>
+        </domain>
+        """
+        try:
+            domain = conn.defineXML(domain_xml)
+        except libvirt.libvirtError as e:
+            # Clean up ISO file if VM creation fails
+            with contextlib.suppress(Exception):
+                os.remove(iso_path)
+            conn.close()
+            return f"Libvirt error: {str(e)}"
+
         # Set autostart for the domain based on parameter
         domain.setAutostart(autostart)
 
