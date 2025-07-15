@@ -62,7 +62,7 @@ def register_handlers(mcp):
                 iface_info = {
                     'mac': mac_elem.get('address', '').lower(),
                     'type': iface.get('type'),
-                    'network': source_elem.get('network') if source_elem is not None else None
+                    'network': source_elem.get('network') if source_elem is not None else None,
                 }
                 interfaces.append(iface_info)
 
@@ -120,6 +120,7 @@ def register_handlers(mcp):
 
         # Method 3: ARP table lookup (requires subprocess)
         import subprocess
+
         for iface in interfaces:
             try:
                 # Check system ARP table for MAC address
@@ -129,6 +130,7 @@ def register_handlers(mcp):
                         if iface['mac'] in line.lower():
                             # Parse IP from ARP entry like: hostname (192.168.1.100) at aa:bb:cc:dd:ee:ff [ether] on eth0
                             import re
+
                             # Simple but robust IPv4 pattern - extract and validate separately
                             ip_match = re.search(r'\(([0-9.]+)\)', line)
                             if ip_match:
@@ -154,10 +156,10 @@ def register_handlers(mcp):
     def get_vm_config(vm_name: str) -> str:
         """
         Get the complete XML configuration of a Virtual Machine.
-        
+
         Args:
           vm_name: Virtual Machine name.
-          
+
         Returns:
            Complete XML configuration if successful, error message otherwise.
         """
@@ -176,10 +178,11 @@ def register_handlers(mcp):
             # Get the complete XML configuration
             xml_config = domain.XMLDesc()
             conn.close()
-            
+
             # Pretty-print the XML for better readability
             try:
                 import xml.dom.minidom
+
                 dom = xml.dom.minidom.parseString(xml_config)
                 pretty_xml = dom.toprettyxml(indent="  ")
                 # Remove empty lines and the XML declaration for cleaner output
@@ -190,7 +193,7 @@ def register_handlers(mcp):
             except Exception:
                 # If pretty-printing fails, return raw XML
                 return xml_config
-                
+
         except libvirt.libvirtError as e:
             conn.close()
             return f"Failed to get configuration for VM '{vm_name}': {str(e)}"
