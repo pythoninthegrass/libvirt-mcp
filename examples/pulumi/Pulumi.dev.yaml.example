@@ -1,5 +1,0 @@
-encryptionsalt: v1:jP7j5rIKSPo=:v1:q/9vxkRaqII07wTy:CYCU7HPFIso66TIDroo+3Q5zgGgW5A==
-config:
-  libvirt-vms:vm_count: "1"
-  libvirt:uri: qemu+ssh://ubuntu@dev/system
-  libvirt-vms:base_ip: 192.168.200
