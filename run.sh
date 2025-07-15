@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+# shellcheck disable=SC1091
+
 set -e
 
 # Load environment variables from .env file if it exists
