@@ -278,30 +278,8 @@ def register_handlers(mcp):
         Returns:
            `OK` if success, error message otherwise.
         """
-        try:
-            conn = libvirt.open(LIBVIRT_DEFAULT_URI)
-        except libvirt.libvirtError as e:
-            return f"Libvirt error: {str(e)}"
-
-        try:
-            domain = conn.lookupByName(vm_name)
-        except libvirt.libvirtError as e:
-            conn.close()
-            return f"VM '{vm_name}' not found: {str(e)}"
-
-        try:
-            # Check if VM is already running
-            if domain.isActive():
-                conn.close()
-                return f"VM '{vm_name}' is already running"
-            
-            # Start the VM
-            domain.create()
-            conn.close()
-            return "OK"
-        except libvirt.libvirtError as e:
-            conn.close()
-            return f"Failed to start VM '{vm_name}': {str(e)}"
+        success, message = _start_vm(vm_name)
+        return message
 
     @mcp.tool()
     def shutdown_vm(vm_name: str):
@@ -315,22 +293,8 @@ def register_handlers(mcp):
         Returns:
            `OK` if successes, `Error` otherwise.
         """
-        try:
-            conn = libvirt.open(LIBVIRT_DEFAULT_URI)
-        except libvirt.libvirtError as e:
-            return f"Libvirt error: {str(e)}"
-
-        try:
-            domain = conn.lookupByName(vm_name)
-
-            if domain.isActive():
-                domain.shutdown()
-
-            return "OK"
-        except libvirt.libvirtError as e:
-            print(f"Error: {e}")
-
-        conn.close()
+        success, message = _stop_vm(vm_name, force=False)
+        return message
 
     @mcp.tool()
     def destroy_vm(vm_name: str):
@@ -352,16 +316,18 @@ def register_handlers(mcp):
         try:
             domain = conn.lookupByName(vm_name)
 
-            if domain.isActive():
-                domain.destroy()
+            # Use helper function to forcefully stop the VM
+            success, message = _stop_vm(vm_name, force=True)
+            if not success:
+                conn.close()
+                return message
 
             domain.undefine()
-
+            conn.close()
             return "OK"
         except libvirt.libvirtError as e:
-            print(f"Error: {e}")
-
-        conn.close()
+            conn.close()
+            return f"Failed to destroy VM '{vm_name}': {str(e)}"
 
     @mcp.tool()
     def list_vms():
@@ -386,11 +352,7 @@ def register_handlers(mcp):
         for dom in conn.listAllDomains():
             name = dom.name()
             is_active = dom.isActive()
-            vms[name] = {
-                'id': dom.ID() if is_active else None,
-                'active': is_active,
-                'uuid': dom.UUIDString()
-            }
+            vms[name] = {'id': dom.ID() if is_active else None, 'active': is_active, 'uuid': dom.UUIDString()}
         conn.close()
         return vms
 
@@ -478,6 +440,9 @@ def register_handlers(mcp):
         except ET.ParseError as e:
             conn.close()
             return f"Failed to parse XML configuration for VM '{old_name}': {str(e)}"
+
+    @mcp.tool()
+    def create_vm(name: str, cores: int, memory: int, path: str, autostart: bool = False) -> str:
         """
         Create a Virtual Machine (VM) with a given name and with a given number of
         cores and a given amount of memory and using a image in path.
@@ -487,6 +452,7 @@ def register_handlers(mcp):
           cores: number of cores
           memory: amount of memory in megabytes
           path: path to the image for the disk
+          autostart: whether to enable autostart (default: False)
 
         Returns:
           `OK` if success, `Error` otherwise
@@ -529,6 +495,11 @@ def register_handlers(mcp):
             return f"Libvirt error: {str(e)}"
 
         # TODO: to check if this fails, e.g., VM already exists
-        domain.create()
+        # Set autostart for the domain based on parameter
+        domain.setAutostart(autostart)
+
         conn.close()
-        return "OK"
+
+        # Use helper function to start the VM
+        success, message = _start_vm(name)
+        return message
