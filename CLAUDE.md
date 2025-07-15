@@ -172,6 +172,7 @@ ssh user@libvirthost "sudo cat /mnt/user-data | base64 -d"
 ## Documentation References
 
 - Use [context7](https://context7.com/libvirt/libvirt/llms.txt) as the primary source
+- libvirt-python: <https://github.com/libvirt/libvirt-python>
 - python xml api bindings: <https://libvirt.org/python.html>
 - xml format: <https://libvirt.org/format.html>
 - terraform libvirt provider: <https://registry.terraform.io/providers/dmacvicar/libvirt/latest/docs>
