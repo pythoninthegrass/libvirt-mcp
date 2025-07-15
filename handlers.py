@@ -6,6 +6,75 @@ LIBVIRT_DEFAULT_URI = config("LIBVIRT_DEFAULT_URI", default="qemu:///system")
 
 
 def register_handlers(mcp):
+    # Internal helper functions for VM operations
+    def _start_vm(vm_name: str):
+        """Internal helper to start a VM. Returns (success: bool, message: str)"""
+        try:
+            conn = libvirt.open(LIBVIRT_DEFAULT_URI)
+        except libvirt.libvirtError as e:
+            return False, f"Libvirt error: {str(e)}"
+
+        try:
+            domain = conn.lookupByName(vm_name)
+        except libvirt.libvirtError as e:
+            conn.close()
+            return False, f"VM '{vm_name}' not found: {str(e)}"
+
+        try:
+            # Check if VM is already running
+            if domain.isActive():
+                conn.close()
+                return False, f"VM '{vm_name}' is already running"
+
+            # Start the VM
+            domain.create()
+            conn.close()
+            return True, "OK"
+        except libvirt.libvirtError as e:
+            conn.close()
+            return False, f"Failed to start VM '{vm_name}': {str(e)}"
+
+    def _stop_vm(vm_name: str, force: bool = False):
+        """Internal helper to stop a VM. Returns (success: bool, message: str)"""
+        try:
+            conn = libvirt.open(LIBVIRT_DEFAULT_URI)
+        except libvirt.libvirtError as e:
+            return False, f"Libvirt error: {str(e)}"
+
+        try:
+            domain = conn.lookupByName(vm_name)
+        except libvirt.libvirtError as e:
+            conn.close()
+            return False, f"VM '{vm_name}' not found: {str(e)}"
+
+        try:
+            if domain.isActive():
+                if force:
+                    domain.destroy()  # Forceful shutdown
+                else:
+                    domain.shutdown()  # Graceful shutdown
+            conn.close()
+            return True, "OK"
+        except libvirt.libvirtError as e:
+            conn.close()
+            return False, f"Failed to stop VM '{vm_name}': {str(e)}"
+
+    def _is_vm_running(vm_name: str):
+        """Internal helper to check if VM is running. Returns (is_running: bool, error_msg: str or None)"""
+        try:
+            conn = libvirt.open(LIBVIRT_DEFAULT_URI)
+        except libvirt.libvirtError as e:
+            return False, f"Libvirt error: {str(e)}"
+
+        try:
+            domain = conn.lookupByName(vm_name)
+            is_active = domain.isActive()
+            conn.close()
+            return is_active, None
+        except libvirt.libvirtError as e:
+            conn.close()
+            return False, f"VM '{vm_name}' not found: {str(e)}"
+
     # List available resources
     @mcp.resource("list://resources")
     def list_resources() -> dict:
