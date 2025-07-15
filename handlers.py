@@ -395,7 +395,89 @@ def register_handlers(mcp):
         return vms
 
     @mcp.tool()
-    def create_vm(name: str, cores: int, memory: int, path: str) -> str:
+    def rename_vm(old_name: str, new_name: str) -> str:
+        """
+        Rename a Virtual Machine by changing its name in the configuration.
+        The VM must be stopped before renaming.
+
+        Args:
+          old_name: Current name of the virtual machine
+          new_name: New name for the virtual machine
+
+        Returns:
+          `OK` if success, error message otherwise
+        """
+        try:
+            conn = libvirt.open(LIBVIRT_DEFAULT_URI)
+        except libvirt.libvirtError as e:
+            return f"Libvirt error: {str(e)}"
+
+        try:
+            # Look up the domain by its current name
+            domain = conn.lookupByName(old_name)
+        except libvirt.libvirtError as e:
+            conn.close()
+            return f"VM '{old_name}' not found: {str(e)}"
+
+        try:
+            # Check if VM is running - remember state and stop if needed
+            was_running, error_msg = _is_vm_running(old_name)
+            if error_msg:
+                conn.close()
+                return error_msg
+            if was_running:
+                # Stop the VM before renaming
+                success, stop_msg = _stop_vm(old_name, force=False)
+                if not success:
+                    conn.close()
+                    return f"Failed to stop VM '{old_name}' for renaming: {stop_msg}"
+
+            # Check if new name already exists
+            try:
+                conn.lookupByName(new_name)
+                conn.close()
+                return f"VM with name '{new_name}' already exists"
+            except libvirt.libvirtError:
+                # Good, new name doesn't exist
+                pass
+
+            # Get the current XML configuration
+            xml_config = domain.XMLDesc()
+
+            # Parse XML and update the name
+            root = ET.fromstring(xml_config)
+            name_elem = root.find("name")
+            if name_elem is not None:
+                name_elem.text = new_name
+            else:
+                conn.close()
+                return f"Failed to find name element in VM '{old_name}' configuration"
+
+            # Convert back to XML string
+            updated_xml = ET.tostring(root, encoding='unicode')
+
+            # Undefine the old domain
+            domain.undefine()
+
+            # Define the new domain with updated XML
+            conn.defineXML(updated_xml)
+
+            conn.close()
+            
+            # If VM was running before, start it again with the new name
+            if was_running:
+                success, start_msg = _start_vm(new_name)
+                if not success:
+                    return f"VM renamed successfully but failed to restart: {start_msg}"
+            
+            return "OK"
+
+        except libvirt.libvirtError as e:
+            conn.close()
+            return f"Failed to rename VM '{old_name}' to '{new_name}': {str(e)}"
+        except ET.ParseError as e:
+            conn.close()
+            return f"Failed to parse XML configuration for VM '{old_name}': {str(e)}"
         """
         Create a Virtual Machine (VM) with a given name and with a given number of
         cores and a given amount of memory and using a image in path.
