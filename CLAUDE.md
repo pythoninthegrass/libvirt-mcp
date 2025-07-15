@@ -137,45 +137,38 @@ The architecture prioritizes clean separation between MCP protocol handling and 
 
 ## Debugging
 
-- list vms: `virsh list --all`
-- start all stopped vms:
-
-    ```bash
-    for vm in $(virsh list --name --inactive); do
-        virsh start "$vm"
-    done
-    ```
-
-- check apparmor: `sudo dmesg | grep -i apparmor`
-- whitelist libvirt images
-
-    ```bash
-    # /etc/apparmor.d/abstractions/libvirt-qemu
-    /var/lib/libvirt/images-*/** rwk,
-    ```
-- iso permissions: `sudo chown libvirt-qemu:libvirt-qemu /data/libvirt/images/ubuntu-jammy-base`
-
-## Pulumi Commands
-
 ```bash
-# Disable passphrase for easy pulumi deployment
-# * Prefix each command (i.e., chain with `&&`) if running in a new shell
-export PULUMI_CONFIG_PASSPHRASE=
+# List all VMs (running and stopped)
+virsh list --all
 
-# Create a new stack
-pulumi up --yes
+# Start all stopped VMs
+virsh list --name --inactive | xargs -I {} virsh start {}
 
-# Refresh the stack to apply changes
-pulumi refresh
+# Destroy all running VMs (forceful shutdown)
+for vm in $(sudo virsh list --name); do sudo virsh destroy $vm; done
 
-# Destroy the stack
-pulumi destroy --yes
+# Delete all VM definitions (remove configuration)
+for vm in $(sudo virsh list --all --name); do sudo virsh undefine $vm; done
 
-# Remove the stack
-# ! Deletes Pulumi.dev.yaml
-pulumi stack rm --yes
+# Clean up VM disk images
+sudo rm -f /var/lib/libvirt/images/*.qcow2
+
+# Check AppArmor logs for potential issues
+sudo dmesg | grep -i apparmor
+
+# Whitelist libvirt images in AppArmor config
+# * /etc/apparmor.d/abstractions/libvirt-qemu
+/var/lib/libvirt/images-*/** rwk,
+
+# iso permissions
+sudo chown libvirt-qemu:libvirt-qemu /data/libvirt/images/ubuntu-jammy-base
+
+# Mount and inspect cloud-init ISO
+ssh user@libvirthost "sudo mount -o loop /data/libvirt/images/cloudinit-1.iso /mnt && ls -la /mnt/" 
+ssh user@libvirthost "sudo cat /mnt/user-data | base64 -d"
 ```
 
+<!-- ! This section should always be located at the end of the markdown file -->
 ## Documentation References
 
 - Use [context7](https://context7.com/libvirt/libvirt/llms.txt) as the primary source
