@@ -1,8 +1,6 @@
 # TODO
 
 * Test on linux
-* Test via ssh
-  * Set `LIBVIRT_DEFAULT_URI`
 * Networking
   * dhcp
   * static
@@ -36,7 +34,4 @@
 > 3. Accept basic VMs with the simple create_vm function (different from originals)
 
 * Write tests
-* Generate iac
-  * tf
-  * pulumi
 * Add task runners
