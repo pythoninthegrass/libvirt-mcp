@@ -61,9 +61,9 @@ def register_handlers(mcp):
         try:
             if domain.isActive():
                 if force:
-                    domain.destroy()  # Forceful shutdown
+                    domain.destroy()    # Forceful shutdown
                 else:
-                    domain.shutdown()  # Graceful shutdown
+                    domain.shutdown()   # Graceful shutdown
             conn.close()
             return True, "OK"
         except libvirt.libvirtError as e:
