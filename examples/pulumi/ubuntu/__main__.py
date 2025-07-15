@@ -3,25 +3,42 @@
 import base64
 import pulumi
 import pulumi_libvirt as libvirt
+from decouple import config
 from textwrap import dedent
 
-# Configuration
-config = pulumi.Config()
-vm_count = config.get_int("vm_count") or 3
-vm_memory = config.get_int("vm_memory") or 2048  # MB
-vm_vcpus = config.get_int("vm_vcpus") or 2
-base_ip = config.get("base_ip") or "192.168.200"
-ubuntu_image_url = (
-    config.get("ubuntu_image_url") or "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
-)
+# env vars
+LIBVIRT_DEFAULT_URI = config("LIBVIRT_DEFAULT_URI", default="qemu:///system")
+BASE_IP = config("BASE_IP", default="192.168.200")
+UBUNTU_IMAGE_PATH = config("UBUNTU_IMAGE_PATH", default=None)
+UBUNTU_IMAGE_URL = config("UBUNTU_IMAGE_URL",
+                          default="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img")
+VM_COUNT = config("VM_COUNT", default=3, cast=int)
+VM_CPU = config("VM_CPU", default=2, cast=int)
+VM_RAM = config("VM_RAM", default=2048, cast=int)
+VM_SIZE_GB = config("VM_SIZE_GB", default=32, cast=int)
+VM_SIZE_BYTES = VM_SIZE_GB * 1024 * 1024 * 1024
 
-# Create a custom network for the VMs
+# configuration
+conf = pulumi.Config()
+vm_count = conf.get_int("vm_count") or VM_COUNT
+vm_vcpus = conf.get_int("vm_vcpus") or VM_CPU
+vm_memory = conf.get_int("vm_memory") or VM_RAM
+base_ip = conf.get("base_ip") or BASE_IP
+ubuntu_image_path = conf.get("ubuntu_image_path") or UBUNTU_IMAGE_PATH
+ubuntu_image_url = conf.get("ubuntu_image_url") or UBUNTU_IMAGE_URL
+
+# Use URL source to avoid path issues with remote libvirt
+image_source = ubuntu_image_url
+
+print(f"Using image source: {image_source}")
+
+# create a custom network for the vms
 vm_network = libvirt.Network(
     "vm-network",
     name="pulumi-vm-network",
     mode="nat",
     domain="vm.local",
-    addresses=["192.168.200.0/24"],
+    addresses=[f"{base_ip}.0/24"],
     dns={
         "enabled": True,
         "local_only": False,
@@ -31,23 +48,28 @@ vm_network = libvirt.Network(
     },
 )
 
-# Create base Ubuntu image volume
-base_volume = libvirt.Volume("ubuntu-base",
-                             name="ubuntu-jammy-base",
-                             source=ubuntu_image_url,
-                             format="qcow2",
-                             pool="default")
+# create base ubuntu image volume using predownloaded image
+base_volume = libvirt.Volume(
+    "ubuntu-base",
+    name="ubuntu-noble-base",
+    source=image_source,  # Use configured image source
+    format="qcow2",
+    pool="default"
+)
 
 
-# Cloud-init user data template
+# cloud-init user data template
 def create_user_data():
-    user_data = dedent("""#cloud-config
+    user_data = dedent("""\
+    #cloud-config
+
     users:
       - name: ubuntu
         sudo: ALL=(ALL) NOPASSWD:ALL
         shell: /bin/bash
         lock_passwd: true
-        ssh_authorized_keys: []
+        ssh_import_id:
+          - gh:pythoninthegrass
 
     package_update: true
     package_upgrade: true
@@ -70,7 +92,7 @@ def create_user_data():
     return base64.b64encode(user_data.encode()).decode()
 
 
-# Network data template for static IP
+# network data template for static ip
 def create_network_data(ip_address):
     network_data = dedent(f"""
     version: 2
@@ -88,38 +110,39 @@ def create_network_data(ip_address):
     return base64.b64encode(network_data.encode()).decode()
 
 
-# Create VMs
+# create vms
 vms = []
 for i in range(vm_count):
     vm_name = f"ubuntu-vm-{i + 1}"
     static_ip = f"{base_ip}.{10 + i}"
 
-    # Create volume for this VM (copy of base)
+    # create volume for this vm (copy of base)
     vm_volume = libvirt.Volume(
         f"volume-{i + 1}",
         name=f"ubuntu-vm-{i + 1}-disk",
         base_volume_id=base_volume.id,
         format="qcow2",
-        size=34359738368,  # 32GB
+        size=VM_SIZE_BYTES,
+        pool="default",
+        # Explicit dependency on base volume
+        opts=pulumi.ResourceOptions(depends_on=[base_volume]),
+    )
+
+    cloudinit_disk = libvirt.CloudInitDisk(
+        f"cloudinit-{i + 1}",
+        name=f"cloudinit-{i + 1}.iso",
+        user_data=create_user_data(),
+        network_config=create_network_data(static_ip),
         pool="default",
     )
 
-    # Skip cloud-init for now
-    # cloudinit_disk = libvirt.CloudinitDisk(
-    #     f"cloudinit-{i + 1}",
-    #     name=f"cloudinit-{i + 1}.iso",
-    #     user_data=create_user_data(),
-    #     network_config=create_network_data(static_ip),
-    #     pool="default",
-    # )
-
-    # Create the VM domain
+    # create the vm domain - CRITICAL: Depend on ALL prerequisites
     vm = libvirt.Domain(
         f"vm-{i + 1}",
         name=vm_name,
         memory=vm_memory,
         vcpu=vm_vcpus,
-        # Network interface
+        # network interface
         network_interfaces=[
             {
                 "network_id": vm_network.id,
@@ -128,17 +151,24 @@ for i in range(vm_count):
                 "wait_for_lease": True,
             }
         ],
-        # Disks
+        # disks
         disks=[
             {
                 "volume_id": vm_volume.id,
             },
-            # Skip cloud-init disk for now
-            # {
-            #     "volume_id": cloudinit_disk.id,
-            # },
         ],
-        # Console access
+        # Cloud-init disk reference
+        cloudinit=cloudinit_disk.id,
+        # CRITICAL: Explicit dependencies on ALL required resources
+        opts=pulumi.ResourceOptions(
+            depends_on=[
+                vm_network,  # Network must be ready
+                vm_volume,  # VM disk must be ready
+                cloudinit_disk,  # CloudInit disk must be ready
+                base_volume,  # Base volume must be ready
+            ]
+        ),
+        # console access
         consoles=[
             {
                 "type": "pty",
@@ -146,29 +176,27 @@ for i in range(vm_count):
                 "target_type": "serial",
             }
         ],
-        # Graphics (SPICE)
+        # graphics (spice)
         graphics={
             "type": "spice",
             "listen_type": "address",
             "listen_address": "127.0.0.1",
             "autoport": True,
         },
-        # Boot configuration
-        boot_devices=[{"dev": "hd"}],
-        # Machine type
+        # machine type
         machine="pc",
         arch="x86_64",
-        # Auto-start on boot
+        # auto-start on boot
         autostart=True,
     )
 
     vms.append(vm)
 
-# Export important information
+# export important information
 pulumi.export("network_name", vm_network.name)
 pulumi.export("network_bridge", vm_network.bridge)
 
-# Export VM information
+# export vm information
 vm_info = []
 for i, vm in enumerate(vms):
     vm_info.append(
@@ -182,7 +210,7 @@ for i, vm in enumerate(vms):
 
 pulumi.export("vms", vm_info)
 
-# Export connection commands
+# export connection commands
 connection_commands = []
 for i in range(vm_count):
     ip = f"{base_ip}.{10 + i}"
