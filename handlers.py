@@ -457,7 +457,7 @@ def register_handlers(mcp):
         try:
             parsed = urlparse(path_or_url)
             return parsed.scheme in ('http', 'https', 'ftp', 'ftps')
-        except:
+        except Exception:
             return False
 
     def _get_cache_path(url):
