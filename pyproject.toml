@@ -16,6 +16,7 @@ dependencies = [
     "mcp[cli]>=1.7.1",
     "paramiko>=3.0.0",
     "python-decouple>=3.8",
+    "sh>=2.2.2",
 ]
 
 [project.optional-dependencies]
