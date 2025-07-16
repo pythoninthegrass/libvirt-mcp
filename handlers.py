@@ -40,59 +40,41 @@ class LibvirtWrapper:
             # For remote SSH connections, run virt-install on the remote host
             if "ssh://" in self.uri:
                 host_part = self.uri.split("://")[1].split("/")[0]
+                # fmt: off
                 cmd = [
-                    "ssh",
-                    host_part,
-                    "sudo",
-                    "virt-install",
-                    "--name",
-                    name,
-                    "--virt-type",
-                    "kvm",
-                    "--osinfo",
-                    osvariant,
-                    "--memory",
-                    str(memory),
-                    "--vcpus",
-                    str(cpucount),
-                    "--network",
-                    "default,model=virtio",
-                    "--graphics",
-                    "spice",
-                    "--disk",
-                    f"path={diskimg},format=qcow2,bus=virtio",
-                    "--disk",
-                    f"path={cloudconfig_img},device=cdrom",
+                    "ssh", host_part, "sudo", "virt-install",
+                    "--name", name,
+                    "--virt-type", "kvm",
+                    "--osinfo", osvariant,
+                    "--memory", str(memory),
+                    "--vcpus", str(cpucount),
+                    "--network", "default,model=virtio",
+                    "--graphics", "spice",
+                    "--disk", f"path={diskimg},format=qcow2,bus=virtio",
+                    "--disk", f"path={cloudconfig_img},device=cdrom",
                     "--import",
                     "--noautoconsole",
                 ]
+                # fmt: on
             else:
                 # Local installation
+                # fmt: off
                 cmd = [
                     "virt-install",
-                    "--connect",
-                    self.uri,
-                    "--name",
-                    name,
-                    "--virt-type",
-                    "kvm",
-                    "--osinfo",
-                    osvariant,
-                    "--memory",
-                    str(memory),
-                    "--vcpus",
-                    str(cpucount),
-                    "--network",
-                    "default,model=virtio",
-                    "--graphics",
-                    "spice",
-                    "--disk",
-                    f"path={diskimg},format=qcow2,bus=virtio",
-                    "--disk",
-                    f"path={cloudconfig_img},device=cdrom",
+                    "--connect", self.uri,
+                    "--name", name,
+                    "--virt-type", "kvm",
+                    "--osinfo", osvariant,
+                    "--memory", str(memory),
+                    "--vcpus", str(cpucount),
+                    "--network", "default,model=virtio",
+                    "--graphics", "spice",
+                    "--disk", f"path={diskimg},format=qcow2,bus=virtio",
+                    "--disk", f"path={cloudconfig_img},device=cdrom",
                     "--import",
                     "--noautoconsole",
                 ]
+                # fmt: on
 
             try:
                 sh.virt_install(*cmd[2:], _err_to_out=True)
@@ -136,29 +118,22 @@ class LibvirtWrapper:
                     meta_data_path = meta_file.name
 
             try:
+                # fmt: off
                 cmd = [
                     "virt-install",
-                    "--connect",
-                    self.uri,
-                    "--name",
-                    name,
-                    "--virt-type",
-                    "kvm",
-                    "--osinfo",
-                    osvariant,
-                    "--memory",
-                    str(memory),
-                    "--vcpus",
-                    str(cpucount),
-                    "--network",
-                    "default,model=virtio",
-                    "--graphics",
-                    "spice",
-                    "--disk",
-                    f"path={diskimg},format=qcow2,bus=virtio",
+                    "--connect", self.uri,
+                    "--name", name,
+                    "--virt-type", "kvm",
+                    "--osinfo", osvariant,
+                    "--memory", str(memory),
+                    "--vcpus", str(cpucount),
+                    "--network", "default,model=virtio",
+                    "--graphics", "spice",
+                    "--disk", f"path={diskimg},format=qcow2,bus=virtio",
                     "--import",
                     "--noautoconsole",
                 ]
+                # fmt: on
 
                 # Add cloud-init configuration
                 if meta_data_path:
