@@ -5,7 +5,7 @@ import jinja2
 import libvirt
 import os
 import paramiko
-import subprocess
+import sh
 import tempfile
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -14,6 +14,408 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 LIBVIRT_DEFAULT_URI = config("LIBVIRT_DEFAULT_URI", default="qemu:///system")
+
+
+class LibvirtWrapper:
+    """Wrapper class for libvirt operations following the reference repository pattern."""
+
+    def __init__(self, uri=None):
+        self.uri = uri or LIBVIRT_DEFAULT_URI
+
+    def install(self, name, osvariant, memory, cpucount, diskimg, cloudconfig_img):
+        """Install a VM using virt-install command with cloud-init support.
+
+        Args:
+            name: VM name
+            osvariant: OS variant (e.g., 'ubuntu22.04')
+            memory: Memory in MB
+            cpucount: Number of CPU cores
+            diskimg: Path to disk image
+            cloudconfig_img: Path to cloud-init ISO
+
+        Returns:
+            tuple: (success: bool, error_message: str or None)
+        """
+        try:
+            # For remote SSH connections, run virt-install on the remote host
+            if "ssh://" in self.uri:
+                host_part = self.uri.split("://")[1].split("/")[0]
+                cmd = [
+                    "ssh",
+                    host_part,
+                    "sudo",
+                    "virt-install",
+                    "--name",
+                    name,
+                    "--virt-type",
+                    "kvm",
+                    "--osinfo",
+                    osvariant,
+                    "--memory",
+                    str(memory),
+                    "--vcpus",
+                    str(cpucount),
+                    "--network",
+                    "default,model=virtio",
+                    "--graphics",
+                    "spice",
+                    "--disk",
+                    f"path={diskimg},format=qcow2,bus=virtio",
+                    "--disk",
+                    f"path={cloudconfig_img},device=cdrom",
+                    "--import",
+                    "--noautoconsole",
+                ]
+            else:
+                # Local installation
+                cmd = [
+                    "virt-install",
+                    "--connect",
+                    self.uri,
+                    "--name",
+                    name,
+                    "--virt-type",
+                    "kvm",
+                    "--osinfo",
+                    osvariant,
+                    "--memory",
+                    str(memory),
+                    "--vcpus",
+                    str(cpucount),
+                    "--network",
+                    "default,model=virtio",
+                    "--graphics",
+                    "spice",
+                    "--disk",
+                    f"path={diskimg},format=qcow2,bus=virtio",
+                    "--disk",
+                    f"path={cloudconfig_img},device=cdrom",
+                    "--import",
+                    "--noautoconsole",
+                ]
+
+            try:
+                sh.virt_install(*cmd[2:], _err_to_out=True)
+            except sh.ErrorReturnCode as e:
+                return False, f"virt-install failed: {e.stderr.decode()}"
+
+            return True, None
+
+        except Exception as e:
+            return False, f"Failed to install VM: {str(e)}"
+
+    def install_with_cloud_init(self, name, osvariant, memory, cpucount, diskimg, user_data, meta_data=None):
+        """Install a VM using virt-install with modern --cloud-init support.
+
+        This method uses virt-install's built-in --cloud-init option which handles
+        ISO creation and placement automatically, including for remote connections.
+
+        Args:
+            name: VM name
+            osvariant: OS variant (e.g., 'ubuntu22.04')
+            memory: Memory in MB
+            cpucount: Number of CPU cores
+            diskimg: Path to disk image
+            user_data: Cloud-init user data configuration
+            meta_data: Optional cloud-init metadata (defaults to hostname)
+
+        Returns:
+            tuple: (success: bool, error_message: str or None)
+        """
+        try:
+            # Create temporary user-data file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='-user-data', delete=False) as user_file:
+                user_file.write(user_data)
+                user_data_path = user_file.name
+
+            # Create temporary meta-data file if provided
+            meta_data_path = None
+            if meta_data:
+                with tempfile.NamedTemporaryFile(mode='w', suffix='-meta-data', delete=False) as meta_file:
+                    meta_file.write(meta_data)
+                    meta_data_path = meta_file.name
+
+            try:
+                cmd = [
+                    "virt-install",
+                    "--connect",
+                    self.uri,
+                    "--name",
+                    name,
+                    "--virt-type",
+                    "kvm",
+                    "--osinfo",
+                    osvariant,
+                    "--memory",
+                    str(memory),
+                    "--vcpus",
+                    str(cpucount),
+                    "--network",
+                    "default,model=virtio",
+                    "--graphics",
+                    "spice",
+                    "--disk",
+                    f"path={diskimg},format=qcow2,bus=virtio",
+                    "--import",
+                    "--noautoconsole",
+                ]
+
+                # Add cloud-init configuration
+                if meta_data_path:
+                    cmd.extend(["--cloud-init", f"user-data={user_data_path},meta-data={meta_data_path}"])
+                else:
+                    cmd.extend(["--cloud-init", f"user-data={user_data_path}"])
+
+                try:
+                    sh.virt_install(*cmd[2:], _err_to_out=True)
+                except sh.ErrorReturnCode as e:
+                    return False, f"virt-install failed: {e.stderr.decode()}"
+
+                return True, None
+
+            finally:
+                # Clean up temporary files
+                with contextlib.suppress(Exception):
+                    os.unlink(user_data_path)
+                if meta_data_path:
+                    with contextlib.suppress(Exception):
+                        os.unlink(meta_data_path)
+
+        except Exception as e:
+            return False, f"Failed to install VM with cloud-init: {str(e)}"
+
+    def check_cloud_init_support(self):
+        """Check if virt-install supports the --cloud-init option.
+
+        Returns:
+            tuple: (supported: bool, version: str, message: str)
+        """
+        try:
+            # For remote connections, run the check on the remote host
+            if "ssh://" in self.uri:
+                host_part = self.uri.split("://")[1].split("/")[0]
+
+                # Get version
+                try:
+                    version_result = sh.ssh(host_part, "virt-install", "--version", _timeout=10)
+                    version = version_result.stdout.decode().strip()
+                except sh.ErrorReturnCode:
+                    version = "unknown"
+
+                # Check for --cloud-init support
+                try:
+                    help_result = sh.ssh(host_part, "virt-install", "--help", _timeout=10)
+                    supported = "--cloud-init" in help_result.stdout.decode()
+                except sh.ErrorReturnCode:
+                    supported = False
+
+                if supported:
+                    return True, version, f"virt-install {version} supports --cloud-init"
+                else:
+                    return False, version, f"virt-install {version} does not support --cloud-init (requires 3.0+)"
+            else:
+                # Local check
+                try:
+                    version_result = sh.virt_install("--version", _timeout=10)
+                    version = version_result.stdout.decode().strip()
+                except sh.ErrorReturnCode:
+                    version = "unknown"
+
+                try:
+                    help_result = sh.virt_install("--help", _timeout=10)
+                    supported = "--cloud-init" in help_result.stdout.decode()
+                except sh.ErrorReturnCode:
+                    supported = False
+
+                if supported:
+                    return True, version, f"virt-install {version} supports --cloud-init"
+                else:
+                    return False, version, f"virt-install {version} does not support --cloud-init (requires 3.0+)"
+
+        except Exception as e:
+            return False, "unknown", f"Failed to check virt-install support: {str(e)}"
+
+    def create_remote_cloudinit_iso(self, vm_name, user_data, meta_data):
+        """Create cloud-init ISO directly on remote host (more efficient than copying).
+
+        Args:
+            vm_name: VM name for ISO filename
+            user_data: Cloud-init user data content
+            meta_data: Cloud-init metadata content
+
+        Returns:
+            tuple: (success: bool, iso_path: str, error_message: str or None)
+        """
+        if "ssh://" not in self.uri:
+            return False, None, "Remote ISO creation only supported for SSH connections"
+
+        host_part = self.uri.split("://")[1].split("/")[0]
+        iso_path = f"/var/lib/libvirt/images/{vm_name}-cloudinit.iso"
+
+        try:
+            # Create temporary user-data file on remote host
+            user_data_cmd = f"echo {repr(user_data)} > /tmp/{vm_name}-user-data"
+            try:
+                sh.ssh(host_part, "sh", "-c", user_data_cmd, _timeout=30)
+            except sh.ErrorReturnCode as e:
+                return False, None, f"Failed to create user-data on remote host: {e.stderr.decode()}"
+
+            # Create temporary meta-data file on remote host
+            meta_data_cmd = f"echo {repr(meta_data)} > /tmp/{vm_name}-meta-data"
+            try:
+                sh.ssh(host_part, "sh", "-c", meta_data_cmd, _timeout=30)
+            except sh.ErrorReturnCode as e:
+                return False, None, f"Failed to create meta-data on remote host: {e.stderr.decode()}"
+
+            # Try cloud-localds first on remote host
+            cloud_localds_cmd = f"cloud-localds {iso_path} /tmp/{vm_name}-user-data /tmp/{vm_name}-meta-data"
+            try:
+                sh.ssh(host_part, "sh", "-c", cloud_localds_cmd, _timeout=60)
+                # If cloud-localds succeeds, clean up temp files and return
+                with contextlib.suppress(sh.ErrorReturnCode):
+                    sh.ssh(host_part, "rm", "-f", f"/tmp/{vm_name}-user-data", f"/tmp/{vm_name}-meta-data", _timeout=10)
+                return True, iso_path, None
+            except sh.ErrorReturnCode:
+                pass
+
+            # Fallback to mkisofs/genisoimage on remote host with sudo
+            mkisofs_cmd = (
+                f"sudo mkisofs -output {iso_path} -volid cidata -joliet -rock /tmp/{vm_name}-user-data /tmp/{vm_name}-meta-data"
+            )
+            try:
+                sh.ssh(host_part, "sh", "-c", mkisofs_cmd, _timeout=60)
+                # Clean up temp files
+                with contextlib.suppress(sh.ErrorReturnCode):
+                    sh.ssh(host_part, "rm", "-f", f"/tmp/{vm_name}-user-data", f"/tmp/{vm_name}-meta-data", _timeout=10)
+                return True, iso_path, None
+            except sh.ErrorReturnCode as e:
+                # Clean up temp files
+                with contextlib.suppress(sh.ErrorReturnCode):
+                    sh.ssh(host_part, "rm", "-f", f"/tmp/{vm_name}-user-data", f"/tmp/{vm_name}-meta-data", _timeout=10)
+                return False, None, f"Failed to create ISO on remote host: {e.stderr.decode()}"
+
+        except Exception as e:
+            return False, None, f"Failed to create remote ISO: {str(e)}"
+
+
+def _is_url(path_or_url):
+    """Check if the given string is a URL."""
+    try:
+        parsed = urlparse(path_or_url)
+        return parsed.scheme in ('http', 'https', 'ftp', 'ftps')
+    except Exception:
+        return False
+
+
+def _get_cache_path(url):
+    """Generate a cached file path for a URL."""
+    # Create a hash of the URL for the filename
+    url_hash = hashlib.md5(url.encode()).hexdigest()
+    parsed = urlparse(url)
+    filename = os.path.basename(parsed.path)
+    if not filename:
+        filename = f"image_{url_hash}.qcow2"
+
+    # Use libvirt images directory for caching
+    cache_dir = Path("/var/lib/libvirt/images")
+    cache_path = cache_dir / f"cached_{url_hash}_{filename}"
+    return cache_path
+
+
+def _download_image(url, cache_path):
+    """Download an image from URL to cache path."""
+    try:
+        # Create cache directory if it doesn't exist
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Download the file
+        with urllib.request.urlopen(url) as response, open(cache_path, 'wb') as f:
+            # Download in chunks to handle large files
+            chunk_size = 8192
+            while True:
+                chunk = response.read(chunk_size)
+                if not chunk:
+                    break
+                f.write(chunk)
+
+        return True, None
+    except Exception as e:
+        return False, f"Failed to download image from {url}: {str(e)}"
+
+
+def _resolve_image_path(path_or_url):
+    """Resolve image path, handling URLs and local paths with fallback downloading."""
+    # If it's a URL, handle download/caching
+    if _is_url(path_or_url):
+        cache_path = _get_cache_path(path_or_url)
+
+        # Check if cached version exists
+        if cache_path.exists():
+            return str(cache_path), None
+
+        # Download and cache the image
+        success, error = _download_image(path_or_url, cache_path)
+        if success:
+            return str(cache_path), None
+        else:
+            return None, error
+
+    # It's a local path, but we need to handle remote libvirt hosts
+    path = Path(path_or_url)
+
+    # Check if using SSH connection to remote host
+    if "ssh://" in LIBVIRT_DEFAULT_URI:
+        # Extract hostname from URI like qemu+ssh://user@hostname/system
+        host_part = LIBVIRT_DEFAULT_URI.split("://")[1].split("/")[0]
+
+        # Test if remote path exists via SSH
+        try:
+            try:
+                sh.ssh(host_part, "test", "-f", path_or_url, _timeout=10)
+                return str(path_or_url), None
+            except sh.ErrorReturnCode:
+                return None, f"Remote image path does not exist: {path_or_url}"
+        except Exception as e:
+            return None, f"Failed to check remote image path: {str(e)}"
+    else:
+        # Check if local path exists (original behavior)
+        if path.exists():
+            return str(path), None
+
+        # Local path doesn't exist, cannot proceed
+        return None, f"Local image path does not exist: {path_or_url}"
+
+
+def get_os_image_path(os_name: str) -> str:
+    """Return the path in the system to a disk with OS installed"""
+    # Check multiple possible locations for images
+    possible_paths = [
+        f"/var/lib/libvirt/images/{os_name}.qcow2",
+        f"/data/libvirt/images/{os_name}.qcow2",
+        f"/var/lib/libvirt/images/{os_name}.img",
+        f"/data/libvirt/images/{os_name}.img",
+        "/var/lib/libvirt/images/ubuntu-24.04-server-cloudimg-amd64.img",  # Common Ubuntu image
+        "/data/libvirt/images/ubuntu-24.04-base.qcow2",  # Common custom image
+    ]
+
+    # If using SSH connection, check remote paths
+    if "ssh://" in LIBVIRT_DEFAULT_URI:
+        host_part = LIBVIRT_DEFAULT_URI.split("://")[1].split("/")[0]
+
+        for path in possible_paths:
+            try:
+                sh.ssh(host_part, "test", "-f", path, _timeout=5)
+                return path
+            except Exception:
+                continue
+    else:
+        # Check local paths
+        for path in possible_paths:
+            if Path(path).exists():
+                return path
+
+    # Default fallback
+    return f"/var/lib/libvirt/images/{os_name}.qcow2"
 
 
 def register_handlers(mcp):
@@ -61,9 +463,9 @@ def register_handlers(mcp):
         try:
             if domain.isActive():
                 if force:
-                    domain.destroy()    # Forceful shutdown
+                    domain.destroy()  # Forceful shutdown
                 else:
-                    domain.shutdown()   # Graceful shutdown
+                    domain.shutdown()  # Graceful shutdown
             conn.close()
             return True, "OK"
         except libvirt.libvirtError as e:
@@ -105,6 +507,33 @@ def register_handlers(mcp):
     @mcp.resource("images://{os_name}")
     def get_os_image_path(os_name: str) -> str:
         """Return the path in the system to a disk with OS installed"""
+        # Check multiple possible locations for images
+        possible_paths = [
+            f"/var/lib/libvirt/images/{os_name}.qcow2",
+            f"/data/libvirt/images/{os_name}.qcow2",
+            f"/var/lib/libvirt/images/{os_name}.img",
+            f"/data/libvirt/images/{os_name}.img",
+            "/var/lib/libvirt/images/ubuntu-24.04-server-cloudimg-amd64.img",  # Common Ubuntu image
+            "/data/libvirt/images/ubuntu-24.04-base.qcow2",  # Common custom image
+        ]
+
+        # If using SSH connection, check remote paths
+        if "ssh://" in LIBVIRT_DEFAULT_URI:
+            host_part = LIBVIRT_DEFAULT_URI.split("://")[1].split("/")[0]
+
+            for path in possible_paths:
+                try:
+                    sh.ssh(host_part, "test", "-f", path, _timeout=5)
+                    return path
+                except Exception:
+                    continue
+        else:
+            # Check local paths
+            for path in possible_paths:
+                if Path(path).exists():
+                    return path
+
+        # Default fallback
         return f"/var/lib/libvirt/images/{os_name}.qcow2"
 
     @mcp.tool()
@@ -198,33 +627,31 @@ def register_handlers(mcp):
                 # Network might not exist or have DHCP, continue
                 continue
 
-        # Method 3: ARP table lookup (requires subprocess)
-        import subprocess
+        # Method 3: ARP table lookup (requires sh)
 
         for iface in interfaces:
             try:
                 # Check system ARP table for MAC address
-                result = subprocess.run(['arp', '-a'], capture_output=True, text=True, timeout=5)
-                if result.returncode == 0:
-                    for line in result.stdout.split('\n'):
-                        if iface['mac'] in line.lower():
-                            # Parse IP from ARP entry like: hostname (192.168.1.100) at aa:bb:cc:dd:ee:ff [ether] on eth0
-                            import re
+                result = sh.arp("-a", _timeout=5)
+                for line in result.stdout.decode().split('\n'):
+                    if iface['mac'] in line.lower():
+                        # Parse IP from ARP entry like: hostname (192.168.1.100) at aa:bb:cc:dd:ee:ff [ether] on eth0
+                        import re
 
-                            # Simple but robust IPv4 pattern - extract and validate separately
-                            ip_match = re.search(r'\(([0-9.]+)\)', line)
-                            if ip_match:
-                                ip = ip_match.group(1)
-                                # Validate IP address by checking octets
-                                octets = ip.split('.')
-                                if len(octets) == 4:
-                                    try:
-                                        if all(0 <= int(octet) <= 255 for octet in octets):
-                                            conn.close()
-                                            return f"{ip} (ARP table)"
-                                    except ValueError:
-                                        pass  # Invalid octet, continue
-            except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+                        # Simple but robust IPv4 pattern - extract and validate separately
+                        ip_match = re.search(r'\(([0-9.]+)\)', line)
+                        if ip_match:
+                            ip = ip_match.group(1)
+                            # Validate IP address by checking octets
+                            octets = ip.split('.')
+                            if len(octets) == 4:
+                                try:
+                                    if all(0 <= int(octet) <= 255 for octet in octets):
+                                        conn.close()
+                                        return f"{ip} (ARP table)"
+                                except ValueError:
+                                    pass  # Invalid octet, continue
+            except (sh.ErrorReturnCode, sh.CommandNotFound):
                 # ARP lookup failed, continue
                 continue
 
@@ -452,75 +879,6 @@ def register_handlers(mcp):
             conn.close()
             return f"Failed to parse XML configuration for VM '{old_name}': {str(e)}"
 
-    def _is_url(path_or_url):
-        """Check if the given string is a URL."""
-        try:
-            parsed = urlparse(path_or_url)
-            return parsed.scheme in ('http', 'https', 'ftp', 'ftps')
-        except Exception:
-            return False
-
-    def _get_cache_path(url):
-        """Generate a cached file path for a URL."""
-        # Create a hash of the URL for the filename
-        url_hash = hashlib.md5(url.encode()).hexdigest()
-        parsed = urlparse(url)
-        filename = os.path.basename(parsed.path)
-        if not filename:
-            filename = f"image_{url_hash}.qcow2"
-
-        # Use libvirt images directory for caching
-        cache_dir = Path("/var/lib/libvirt/images")
-        cache_path = cache_dir / f"cached_{url_hash}_{filename}"
-        return cache_path
-
-    def _download_image(url, cache_path):
-        """Download an image from URL to cache path."""
-        try:
-            # Create cache directory if it doesn't exist
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Download the file
-            with urllib.request.urlopen(url) as response, open(cache_path, 'wb') as f:
-                # Download in chunks to handle large files
-                chunk_size = 8192
-                while True:
-                    chunk = response.read(chunk_size)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-
-            return True, None
-        except Exception as e:
-            return False, f"Failed to download image from {url}: {str(e)}"
-
-    def _resolve_image_path(path_or_url):
-        """Resolve image path, handling URLs and local paths with fallback downloading."""
-        # If it's a URL, handle download/caching
-        if _is_url(path_or_url):
-            cache_path = _get_cache_path(path_or_url)
-
-            # Check if cached version exists
-            if cache_path.exists():
-                return str(cache_path), None
-
-            # Download and cache the image
-            success, error = _download_image(path_or_url, cache_path)
-            if success:
-                return str(cache_path), None
-            else:
-                return None, error
-
-        # It's a local path
-        path = Path(path_or_url)
-
-        # Check if local path exists
-        if path.exists():
-            return str(path), None
-
-        # Local path doesn't exist, cannot proceed
-        return None, f"Local image path does not exist: {path_or_url}"
-
     def get_ssh_public_key():
         """Read SSH public key from libvirt host as fallback to GitHub import."""
         try:
@@ -595,55 +953,81 @@ def register_handlers(mcp):
         )
         return user_data
 
-    def create_cloud_init_iso(vm_name, user_data, meta_data=""):
-        """Create a cloud-init ISO file with user-data and meta-data."""
+    def generate_cloudinit_iso(meta_data, user_data, iso_filename):
+        """Generate a cloud-init ISO file from metadata and user data.
+
+        Args:
+            meta_data: Cloud-init metadata configuration
+            user_data: Cloud-init user data configuration
+            iso_filename: Path where the generated ISO will be saved
+
+        Returns:
+            tuple: (success: bool, error_message: str or None)
+        """
         try:
-            # Create temporary directory for cloud-init files
-            with tempfile.TemporaryDirectory() as temp_dir:
-                temp_path = Path(temp_dir)
+            # Create temporary files for metadata and user data
+            with tempfile.NamedTemporaryFile(mode='w', suffix='-meta-data', delete=False) as meta_file:
+                meta_file.write(meta_data)
+                meta_file_path = meta_file.name
 
-                # Write user-data file
-                user_data_path = temp_path / "user-data"
-                user_data_path.write_text(user_data)
+            with tempfile.NamedTemporaryFile(mode='w', suffix='-user-data', delete=False) as user_file:
+                user_file.write(user_data)
+                user_file_path = user_file.name
 
-                # Write meta-data file
-                meta_data_path = temp_path / "meta-data"
-                meta_data_path.write_text(meta_data)
+            try:
+                # Try cloud-localds first (recommended method)
+                try:
+                    sh.cloud_localds(iso_filename, user_file_path, meta_file_path)
+                    return True, None
+                except sh.CommandNotFound:
+                    # Fallback to genisoimage/mkisofs
+                    return _create_iso_with_genisoimage(iso_filename, meta_file_path, user_file_path)
+                except sh.ErrorReturnCode as e:
+                    return False, f"cloud-localds failed: {e.stderr.decode()}"
 
-                # Create ISO file path
-                iso_path = f"/var/lib/libvirt/images/{vm_name}-cloudinit.iso"
-
-                # Create ISO using genisoimage or mkisofs
-                iso_cmd = None
-                for cmd in ["genisoimage", "mkisofs"]:
-                    if subprocess.run(["which", cmd], capture_output=True).returncode == 0:
-                        iso_cmd = cmd
-                        break
-
-                if not iso_cmd:
-                    return None, "genisoimage or mkisofs not found. Please install genisoimage package."
-
-                # Create the ISO
-                cmd = [
-                    iso_cmd,
-                    "-output",
-                    iso_path,
-                    "-volid",
-                    "cidata",
-                    "-joliet",
-                    "-rock",
-                    str(user_data_path),
-                    str(meta_data_path),
-                ]
-
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                if result.returncode != 0:
-                    return None, f"Failed to create ISO: {result.stderr}"
-
-                return iso_path, None
+            finally:
+                # Clean up temporary files
+                with contextlib.suppress(Exception):
+                    os.unlink(meta_file_path)
+                with contextlib.suppress(Exception):
+                    os.unlink(user_file_path)
 
         except Exception as e:
-            return None, f"Failed to create cloud-init ISO: {str(e)}"
+            return False, f"Failed to generate cloud-init ISO: {str(e)}"
+
+    def _create_iso_with_genisoimage(iso_filename, meta_file_path, user_file_path):
+        """Fallback method to create ISO using genisoimage/mkisofs."""
+        try:
+            # Find available ISO creation tool and create the ISO
+            try:
+                sh.genisoimage("-output", iso_filename, "-volid", "cidata", "-joliet", "-rock", user_file_path, meta_file_path)
+                return True, None
+            except sh.CommandNotFound:
+                try:
+                    sh.mkisofs("-output", iso_filename, "-volid", "cidata", "-joliet", "-rock", user_file_path, meta_file_path)
+                    return True, None
+                except sh.CommandNotFound:
+                    return (
+                        False,
+                        "Neither cloud-localds nor genisoimage/mkisofs found. Please install cloud-image-utils or genisoimage package.",
+                    )
+                except sh.ErrorReturnCode as e:
+                    # Check if it's just configuration file permission warnings
+                    if "Permission denied. Cannot open '.mkisofsrc'" in e.stderr.decode() and Path(iso_filename).exists():
+                        # These are warnings about config files, not fatal errors
+                        # Check if ISO was actually created
+                        return True, None
+                    return False, f"Failed to create ISO: {e.stderr.decode()}"
+            except sh.ErrorReturnCode as e:
+                # Check if it's just configuration file permission warnings
+                if "Permission denied. Cannot open '.genisoimagerc'." in e.stderr.decode() and Path(iso_filename).exists():
+                    # These are warnings about config files, not fatal errors
+                    # Check if ISO was actually created
+                    return True, None
+                return False, f"Failed to create ISO: {e.stderr.decode()}"
+
+        except Exception as e:
+            return False, f"Failed to create ISO with genisoimage: {str(e)}"
 
     @mcp.tool()
     def create_vm(name: str, cores: int, memory: int, path: str, autostart: bool = False) -> str:
@@ -713,6 +1097,99 @@ def register_handlers(mcp):
         return message
 
     @mcp.tool()
+    def create_vm_with_cloudinit_install(
+        name: str,
+        cores: int,
+        memory: int,
+        path: str,
+        osvariant: str = "ubuntu24.04",
+        username: str = "ubuntu",
+        password: str = "ubuntu",
+        groups: list = None,
+        github_ssh_user: str = None,
+        packages: list = None,
+        dns_servers: list = None,
+        autostart: bool = False,
+    ) -> str:
+        """
+        Create a VM using the LibvirtWrapper.install method pattern from the reference repository.
+
+        Args:
+            name: name of the virtual machine
+            cores: number of cores
+            memory: amount of memory in megabytes
+            path: path to the image for the disk (can be local path or URL)
+            osvariant: OS variant for virt-install (default: ubuntu22.04)
+            username: cloud-init username (default: admin)
+            password: cloud-init password (default: ubuntu)
+            groups: user groups list (default: ["sudo"])
+            github_ssh_user: GitHub username for SSH key import (optional)
+            packages: list of packages to install (default: ["curl", "git", "openssh-server", "qemu-guest-agent", "wget"])
+            dns_servers: list of DNS servers to configure (optional)
+            autostart: whether to enable autostart (default: False)
+
+        Returns:
+            `OK` if success, `Error` otherwise
+        """
+        if groups is None:
+            groups = ["sudo"]
+        if packages is None:
+            packages = ["curl", "git", "openssh-server", "qemu-guest-agent", "wget"]
+
+        # Resolve the image path (handles URLs and local paths)
+        resolved_path, path_error = _resolve_image_path(path)
+        if path_error:
+            return f"Image resolution failed: {path_error}"
+
+        # Create cloud-init user data
+        user_data = create_cloud_init_user_data(
+            username=username,
+            password=password,
+            groups=groups,
+            github_ssh_user=github_ssh_user,
+            packages=packages,
+            dns_servers=dns_servers,
+        )
+
+        # Create cloud-init ISO using the new function
+        iso_path = f"/var/lib/libvirt/images/{name}-cloudinit.iso"
+        meta_data = f"instance-id: {name}\nlocal-hostname: {name}\n"
+
+        success, iso_error = generate_cloudinit_iso(meta_data, user_data, iso_path)
+        if not success:
+            return f"Cloud-init ISO creation failed: {iso_error}"
+
+        # Use LibvirtWrapper to install the VM
+        lvw = LibvirtWrapper()
+        success, install_error = lvw.install(
+            name=name,
+            osvariant=osvariant,
+            memory=memory,
+            cpucount=cores,
+            diskimg=resolved_path,
+            cloudconfig_img=iso_path,
+        )
+
+        if not success:
+            # Clean up ISO file if VM creation fails
+            with contextlib.suppress(Exception):
+                os.remove(iso_path)
+            return f"VM installation failed: {install_error}"
+
+        # Set autostart if requested
+        if autostart:
+            try:
+                conn = libvirt.open(LIBVIRT_DEFAULT_URI)
+                domain = conn.lookupByName(name)
+                domain.setAutostart(autostart)
+                conn.close()
+            except Exception as e:
+                # Don't fail the entire operation if autostart fails
+                pass
+
+        return "OK"
+
+    @mcp.tool()
     def create_vm_with_cloudinit(
         name: str,
         cores: int,
@@ -770,9 +1247,12 @@ def register_handlers(mcp):
             dns_servers=dns_servers,
         )
 
-        # Create cloud-init ISO
-        iso_path, iso_error = create_cloud_init_iso(name, user_data)
-        if iso_error:
+        # Create cloud-init ISO using the new function
+        iso_path = f"/var/lib/libvirt/images/{name}-cloudinit.iso"
+        meta_data = f"instance-id: {name}\nlocal-hostname: {name}\n"
+
+        success, iso_error = generate_cloudinit_iso(meta_data, user_data, iso_path)
+        if not success:
             conn.close()
             return f"Cloud-init ISO creation failed: {iso_error}"
 
@@ -830,3 +1310,196 @@ def register_handlers(mcp):
         # Use helper function to start the VM
         success, message = _start_vm(name)
         return message
+
+    @mcp.tool()
+    def create_vm_with_modern_cloudinit(
+        name: str,
+        cores: int,
+        memory: int,
+        path: str,
+        osvariant: str = "ubuntu24.04",
+        username: str = "ubuntu",
+        password: str = "ubuntu",
+        groups: list = None,
+        github_ssh_user: str = None,
+        packages: list = None,
+        dns_servers: list = None,
+        autostart: bool = False,
+    ) -> str:
+        """
+        Create a VM using modern virt-install --cloud-init support (recommended).
+
+        This method uses virt-install's built-in --cloud-init option which automatically
+        handles ISO creation and placement, including for remote libvirt connections.
+        No manual ISO copying required.
+
+        Args:
+            name: name of the virtual machine
+            cores: number of cores
+            memory: amount of memory in megabytes
+            path: path to the image for the disk (can be local path or URL)
+            osvariant: OS variant for virt-install (default: ubuntu24.04)
+            username: cloud-init username (default: ubuntu)
+            password: cloud-init password (default: ubuntu)
+            groups: user groups list (default: ["sudo"])
+            github_ssh_user: GitHub username for SSH key import (optional)
+            packages: list of packages to install (default: ["curl", "git", "openssh-server", "qemu-guest-agent", "wget"])
+            dns_servers: list of DNS servers to configure (optional)
+            autostart: whether to enable autostart (default: False)
+
+        Returns:
+            `OK` if success, `Error` otherwise
+        """
+        if groups is None:
+            groups = ["sudo"]
+        if packages is None:
+            packages = ["curl", "git", "openssh-server", "qemu-guest-agent", "wget"]
+
+        # Resolve the image path (handles URLs and local paths)
+        resolved_path, path_error = _resolve_image_path(path)
+        if path_error:
+            return f"Image resolution failed: {path_error}"
+
+        # Check if modern cloud-init support is available
+        lvw = LibvirtWrapper()
+        supported, version, message = lvw.check_cloud_init_support()
+        if not supported:
+            return f"Error: {message}. Please use create_vm_with_cloudinit_install instead."
+
+        # Create cloud-init user data
+        user_data = create_cloud_init_user_data(
+            username=username,
+            password=password,
+            groups=groups,
+            github_ssh_user=github_ssh_user,
+            packages=packages,
+            dns_servers=dns_servers,
+        )
+
+        # Create metadata
+        meta_data = f"instance-id: {name}\nlocal-hostname: {name}\n"
+
+        # Use LibvirtWrapper with modern cloud-init support
+        success, install_error = lvw.install_with_cloud_init(
+            name=name,
+            osvariant=osvariant,
+            memory=memory,
+            cpucount=cores,
+            diskimg=resolved_path,
+            user_data=user_data,
+            meta_data=meta_data,
+        )
+
+        if not success:
+            return f"VM installation failed: {install_error}"
+
+        # Set autostart if requested
+        if autostart:
+            try:
+                conn = libvirt.open(LIBVIRT_DEFAULT_URI)
+                domain = conn.lookupByName(name)
+                domain.setAutostart(autostart)
+                conn.close()
+            except Exception as e:
+                # Don't fail the entire operation if autostart fails
+                pass
+
+        return "OK"
+
+    @mcp.tool()
+    def create_vm_with_remote_cloudinit(
+        name: str,
+        cores: int,
+        memory: int,
+        path: str,
+        osvariant: str = "ubuntu24.04",
+        username: str = "ubuntu",
+        password: str = "ubuntu",
+        groups: list = None,
+        github_ssh_user: str = None,
+        packages: list = None,
+        dns_servers: list = None,
+        autostart: bool = False,
+    ) -> str:
+        """
+        Create a VM with cloud-init using remote ISO creation (efficient for SSH connections).
+
+        This method creates the cloud-init ISO directly on the remote host instead of
+        copying it, which is more efficient for SSH connections to remote libvirt hosts.
+
+        Args:
+            name: name of the virtual machine
+            cores: number of cores
+            memory: amount of memory in megabytes
+            path: path to the image for the disk (can be local path or URL)
+            osvariant: OS variant for virt-install (default: ubuntu24.04)
+            username: cloud-init username (default: ubuntu)
+            password: cloud-init password (default: ubuntu)
+            groups: user groups list (default: ["sudo"])
+            github_ssh_user: GitHub username for SSH key import (optional)
+            packages: list of packages to install (default: ["curl", "git", "openssh-server", "qemu-guest-agent", "wget"])
+            dns_servers: list of DNS servers to configure (optional)
+            autostart: whether to enable autostart (default: False)
+
+        Returns:
+            `OK` if success, `Error` otherwise
+        """
+        if groups is None:
+            groups = ["sudo"]
+        if packages is None:
+            packages = ["curl", "git", "openssh-server", "qemu-guest-agent", "wget"]
+
+        # Resolve the image path (handles URLs and local paths)
+        resolved_path, path_error = _resolve_image_path(path)
+        if path_error:
+            return f"Image resolution failed: {path_error}"
+
+        # Create cloud-init user data
+        user_data = create_cloud_init_user_data(
+            username=username,
+            password=password,
+            groups=groups,
+            github_ssh_user=github_ssh_user,
+            packages=packages,
+            dns_servers=dns_servers,
+        )
+
+        # Create metadata
+        meta_data = f"instance-id: {name}\nlocal-hostname: {name}\n"
+
+        # Create cloud-init ISO on remote host
+        lvw = LibvirtWrapper()
+        success, iso_path, iso_error = lvw.create_remote_cloudinit_iso(name, user_data, meta_data)
+        if not success:
+            return f"Cloud-init ISO creation failed: {iso_error}"
+
+        # Use LibvirtWrapper to install the VM with the remote ISO
+        success, install_error = lvw.install(
+            name=name,
+            osvariant=osvariant,
+            memory=memory,
+            cpucount=cores,
+            diskimg=resolved_path,
+            cloudconfig_img=iso_path,
+        )
+
+        if not success:
+            # Clean up ISO file if VM creation fails
+            if "ssh://" in LIBVIRT_DEFAULT_URI:
+                host_part = LIBVIRT_DEFAULT_URI.split("://")[1].split("/")[0]
+                with contextlib.suppress(sh.ErrorReturnCode):
+                    sh.ssh(host_part, "sudo", "rm", "-f", iso_path, _timeout=10)
+            return f"VM installation failed: {install_error}"
+
+        # Set autostart if requested
+        if autostart:
+            try:
+                conn = libvirt.open(LIBVIRT_DEFAULT_URI)
+                domain = conn.lookupByName(name)
+                domain.setAutostart(autostart)
+                conn.close()
+            except Exception as e:
+                # Don't fail the entire operation if autostart fails
+                pass
+
+        return "OK"
