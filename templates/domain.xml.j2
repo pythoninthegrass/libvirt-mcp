@@ -1,0 +1,31 @@
+<domain type='kvm'>
+  <name>{{ name }}</name>
+  <memory unit='MiB'>{{ memory }}</memory>
+  <vcpu>{{ cores }}</vcpu>
+  <os>
+    <type arch='x86_64'>hvm</type>
+    <boot dev='hd'/>
+  </os>
+  <devices>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2'/>
+      <source file='{{ disk_path }}'/>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+    {% if cdrom_path %}
+    <disk type='file' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <source file='{{ cdrom_path }}'/>
+      <target dev='hda' bus='ide'/>
+      <readonly/>
+    </disk>
+    {% endif %}
+    <console type='pty' tty='/dev/pts/2'>
+    </console>
+    <interface type='network'>
+      <mac address='{{ mac_address }}'/>
+      <source network='default'/>
+      <model type='virtio'/>
+    </interface>
+  </devices>
+</domain>
