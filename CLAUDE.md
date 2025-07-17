@@ -30,20 +30,63 @@ ruff check --fix
 
 ### Testing
 
+#### Quick Test Commands
 ```bash
-# Run all tests
+# Run all tests (recommended)
+uv run tests/run_tests.py
+
+# Run all tests with pytest
 pytest
 
-# Run specific test types
-pytest -m unit
-pytest -m integration
-pytest -m e2e
-
-# Run with parallel execution
+# Run tests in parallel
 pytest -n auto
 
-# Run single test file
-pytest tests/test_specific.py
+# Run specific test file
+uv run tests/test_handlers.py
+pytest tests/test_handlers.py
+```
+
+#### Test Categories
+```bash
+# Run all tests by category
+uv run tests/test_handlers.py        # Core utility functions
+uv run tests/test_image_access.py    # Image access and resolution
+uv run tests/test_vm_operations.py   # VM operations and libvirt
+uv run tests/test_mcp_tools.py       # MCP tools and business logic
+
+# Run tests with pytest markers
+pytest -m unit                      # Unit tests
+pytest -m integration              # Integration tests  
+pytest -m e2e                      # End-to-end tests
+pytest -m benchmark                # Performance tests
+```
+
+#### Test Configuration
+```bash
+# Test with different libvirt connections
+LIBVIRT_DEFAULT_URI=qemu:///system pytest                    # Local
+LIBVIRT_DEFAULT_URI=qemu+ssh://user@host/system pytest       # Remote SSH
+
+# Test with coverage
+pytest --cov=handlers --cov-report=html
+
+# Test with detailed output
+pytest -v -s
+```
+
+#### Test Development
+```bash
+# Install test dependencies
+uv sync --group test
+
+# Run specific test function
+pytest tests/test_handlers.py::test_url_detection
+
+# Run failed tests only
+pytest --lf
+
+# Run tests matching pattern
+pytest -k "test_url"
 ```
 
 ### Running the MCP Server
@@ -118,7 +161,7 @@ The project implements a Model Context Protocol (MCP) server that bridges AI mod
 **Code Standards**:
 
 - Line length: 130 characters
-- Python 3.11+ requirement
+- Python 3.12+ requirement
 - Ruff for linting/formatting with extensive rule set
 - Import ordering and style consistency
 
@@ -163,9 +206,37 @@ sudo dmesg | grep -i apparmor
 # iso permissions
 sudo chown libvirt-qemu:libvirt-qemu /data/libvirt/images/ubuntu-jammy-base
 
+# Fix libvirt images directory permissions for non-root users
+sudo usermod -a -G libvirt ubuntu
+# Verify group membership
+groups ubuntu
+# User needs to log out and back in or restart libvirt for group changes to take effect
+sudo systemctl restart libvirtd
+
+# Fix images directory permissions (if still getting permission denied)
+sudo chgrp libvirt /var/lib/libvirt/images
+sudo chmod g+rx /var/lib/libvirt/images
+
 # Mount and inspect cloud-init ISO
 ssh user@libvirthost "sudo mount -o loop /data/libvirt/images/cloudinit-1.iso /mnt && ls -la /mnt/" 
 ssh user@libvirthost "sudo cat /mnt/user-data | base64 -d"
+
+# Final troubleshooting step: Disable SELinux/AppArmor if all else fails
+sudo setenforce 0               # Disable SELinux
+sudo systemctl stop apparmor    # Stop AppArmor
+
+# Start SSH agent and add key
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_rsa
+
+# Verify key is loaded
+ssh-add -l
+
+# Guestfish debugging commands for cloud-init logs
+guestfish -a /path/to/disk.qcow2 -i                    # Open image
+cat /var/log/cloud-init.log                           # View cloud-init logs
+cat /var/log/cloud-init-output.log                    # View cloud-init output logs
+virt-log -d <domain_name>                             # Show logs for specific VM
 ```
 
 <!-- ! This section should always be located at the end of the markdown file -->
@@ -175,6 +246,7 @@ ssh user@libvirthost "sudo cat /mnt/user-data | base64 -d"
 - libvirt-python: <https://github.com/libvirt/libvirt-python>
 - python xml api bindings: <https://libvirt.org/python.html>
 - xml format: <https://libvirt.org/format.html>
+- cloud-init implementation: <https://github.com/gergelykalman/libvirt-cloudinit-autoinstaller>
 - terraform libvirt provider: <https://registry.terraform.io/providers/dmacvicar/libvirt/latest/docs>
 - pulumi libvirt provider: <https://www.pulumi.com/registry/packages/libvirt/>
 - vagrant libvirt provider: <https://context7.com/vagrant-libvirt/vagrant-libvirt/llms.txt>
