@@ -102,6 +102,22 @@ uv run server.py
 mcp dev server.py
 ```
 
+### Pulumi VM Management
+
+```bash
+# Create base volume from existing image (run once)
+cd pulumi && ./create-base-volume.sh
+
+# Deploy VMs
+cd pulumi && pulumi up --yes
+
+# Destroy VMs
+cd pulumi && pulumi destroy --yes
+
+# Preview changes
+cd pulumi && pulumi preview
+```
+
 ## Development Best Practices
 
 - Always use `uv run` to activate the virtual environment for one-off commands
@@ -143,6 +159,12 @@ The project implements a Model Context Protocol (MCP) server that bridges AI mod
 - Uses `python-decouple` for environment variable management
 - `.env` file support for local overrides
 - MCP-CLI integration with LLM provider settings
+- Configurable VM and image settings via environment variables:
+  - `BASE_IMAGE_NAME`: Name of the base volume (default: "ubuntu-base-volume")
+  - `BASE_IMAGE_PATH`: Absolute path to source image (default: "/data/libvirt/images/ubuntu-24.04-base.qcow2")
+  - `VM_NAME_PREFIX`: Prefix for VM names (default: "ubuntu")
+  - `STORAGE_POOL`: Storage pool name (default: "default")
+  - `IMAGE_FORMAT`: Image format (default: "qcow2")
 
 ### File Structure Context
 
