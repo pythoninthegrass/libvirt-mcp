@@ -65,10 +65,7 @@ def create_volume(vm_index, base_volume_name):
     if vm_disk and vm_disk > 0:
         volume_args["size"] = vm_disk * 1024 * 1024 * 1024  # Convert GB to bytes
 
-    return libvirt.Volume(
-        f"{vm_name_prefix}-{vm_index}-volume",
-        **volume_args
-    )
+    return libvirt.Volume(f"{vm_name_prefix}-{vm_index}-volume", **volume_args)
 
 
 def create_vm(vm_index, cloud_init_disk, volume):
@@ -109,7 +106,7 @@ print(f"VM RAM (MB): {vm_ram}")
 print(f"VM disk size (GB): {vm_disk}")
 print(f"VM bridge: {vm_bridge}")
 print("=== Network Configuration ===")
-print(f"Base IP range: {get_static_ip(0)} - {get_static_ip(num_vms-1) if num_vms > 1 else get_static_ip(0)}")
+print(f"Base IP range: {get_static_ip(0)} - {get_static_ip(num_vms - 1) if num_vms > 1 else get_static_ip(0)}")
 print(f"Base IP prefix: {base_ip}")
 print(f"Gateway IP: {gateway_ip}")
 print(f"Network CIDR: {network_cidr}")
