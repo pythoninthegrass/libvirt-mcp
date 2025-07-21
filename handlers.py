@@ -4,12 +4,11 @@ import base64
 import contextlib
 import hashlib
 import jinja2
+import json
 import libvirt
 import os
 import paramiko
-import platform
 import sh
-import tempfile
 import urllib.request
 import xml.etree.ElementTree as ET
 from decouple import config
@@ -18,25 +17,99 @@ from sh import CommandNotFound, ErrorReturnCode
 from urllib.parse import urlparse
 
 
-# Helper function to import sh commands with fallback to None
 def import_sh_cmd(cmd_name):
+    """Import sh commands with fallback to None."""
     try:
         return getattr(__import__('sh'), cmd_name)
     except (ImportError, AttributeError):
         return None
 
+
 # Import shell commands with fallbacks
 arp = import_sh_cmd('arp')
-cloud_localds = import_sh_cmd('cloud_localds')
-genisoimage = import_sh_cmd('genisoimage')
-mkisofs = import_sh_cmd('mkisofs')
-qemu_img = import_sh_cmd('qemu_img')
+pulumi = import_sh_cmd('pulumi')
 scp = import_sh_cmd('scp')
 sudo = import_sh_cmd('sudo')
-virt_install = import_sh_cmd('virt_install')
 
 # Default libvirt URI
 LIBVIRT_DEFAULT_URI = config("LIBVIRT_DEFAULT_URI", default="qemu:///system")
+
+
+def _pulumi_command(command, timeout=300):
+    """Execute pulumi command with JSON output and return parsed result.
+
+    Args:
+        command: List of command arguments (e.g., ['up', '--yes'])
+        timeout: Command timeout in seconds
+
+    Returns:
+        tuple: (success: bool, result: dict, error_message: str or None)
+    """
+    try:
+        if pulumi is None:
+            return False, None, "pulumi command not available. Please install pulumi."
+
+        # Always add --non-interactive and --json for programmatic access
+        full_cmd = command + ['--non-interactive', '--json']
+
+        result = pulumi(*full_cmd, _timeout=timeout, _cwd=Path(__file__).parent)
+        output = result.stdout.decode().strip()
+
+        # Parse JSON output
+        try:
+            json_result = json.loads(output)
+            return True, json_result, None
+        except json.JSONDecodeError:
+            # Some commands might not return JSON, return raw output
+            return True, {'output': output}, None
+
+    except ErrorReturnCode as e:
+        error_msg = e.stderr.decode() if e.stderr else str(e)
+        return False, None, f"Pulumi command failed: {error_msg}"
+    except Exception as e:
+        return False, None, f"Failed to run pulumi command: {str(e)}"
+
+
+def _pulumi_preview():
+    """Run pulumi preview and return the result.
+
+    Returns:
+        tuple: (success: bool, result: dict, error_message: str or None)
+    """
+    return _pulumi_command(['preview'])
+
+
+def _pulumi_up():
+    """Run pulumi up and return the result.
+
+    Returns:
+        tuple: (success: bool, result: dict, error_message: str or None)
+    """
+    return _pulumi_command(['up', '--yes'])
+
+
+def _pulumi_destroy():
+    """Run pulumi destroy and return the result.
+
+    Returns:
+        tuple: (success: bool, result: dict, error_message: str or None)
+    """
+    return _pulumi_command(['destroy', '--yes'])
+
+
+def _pulumi_stack_output(output_name=None):
+    """Get pulumi stack output.
+
+    Args:
+        output_name: Optional specific output name to retrieve
+
+    Returns:
+        tuple: (success: bool, result: dict, error_message: str or None)
+    """
+    cmd = ['stack', 'output']
+    if output_name:
+        cmd.append(output_name)
+    return _pulumi_command(cmd)
 
 
 def ssh_cmd(host, command, timeout=30):
@@ -81,260 +154,6 @@ def ssh_cmd(host, command, timeout=30):
 
     except Exception as e:
         return False, "", str(e)
-
-
-class LibvirtWrapper:
-    """Wrapper class for libvirt operations following the reference repository pattern."""
-
-    def __init__(self, uri=None):
-        self.uri = uri or LIBVIRT_DEFAULT_URI
-
-    def install(self, name, osvariant, memory, cpucount, diskimg, cloudconfig_img):
-        """Install a VM using virt-install command with cloud-init support.
-
-        Args:
-            name: VM name
-            osvariant: OS variant (e.g., 'ubuntu22.04')
-            memory: Memory in MB
-            cpucount: Number of CPU cores
-            diskimg: Path to disk image
-            cloudconfig_img: Path to cloud-init ISO
-
-        Returns:
-            tuple: (success: bool, error_message: str or None)
-        """
-        try:
-            # For remote SSH connections, run virt-install on the remote host
-            if "ssh://" in self.uri:
-                host_part = self.uri.split("://")[1].split("/")[0]
-                # fmt: off
-                cmd = [
-                    "ssh", host_part, "sudo", "virt-install",
-                    "--name", name,
-                    "--virt-type", "kvm",
-                    "--osinfo", osvariant,
-                    "--memory", str(memory),
-                    "--vcpus", str(cpucount),
-                    "--network", "default,model=virtio",
-                    "--graphics", "spice",
-                    "--disk", f"path={diskimg},format=qcow2,bus=virtio",
-                    "--disk", f"path={cloudconfig_img},device=cdrom",
-                    "--import",
-                    "--noautoconsole",
-                ]
-                # fmt: on
-            else:
-                # Local installation
-                # fmt: off
-                cmd = [
-                    "virt-install",
-                    "--connect", self.uri,
-                    "--name", name,
-                    "--virt-type", "kvm",
-                    "--osinfo", osvariant,
-                    "--memory", str(memory),
-                    "--vcpus", str(cpucount),
-                    "--network", "default,model=virtio",
-                    "--graphics", "spice",
-                    "--disk", f"path={diskimg},format=qcow2,bus=virtio",
-                    "--disk", f"path={cloudconfig_img},device=cdrom",
-                    "--import",
-                    "--noautoconsole",
-                ]
-                # fmt: on
-
-            try:
-                if virt_install is None:
-                    return False, "virt-install command not available. Please install virt-install package."
-                virt_install(*cmd[2:], _err_to_out=True)
-            except ErrorReturnCode as e:
-                return False, f"virt-install failed: {e.stderr.decode()}"
-
-            return True, None
-
-        except Exception as e:
-            return False, f"Failed to install VM: {str(e)}"
-
-    def install_with_cloud_init(self, name, osvariant, memory, cpucount, diskimg, user_data, meta_data=None):
-        """Install a VM using virt-install with modern --cloud-init support.
-
-        This method uses virt-install's built-in --cloud-init option which handles
-        ISO creation and placement automatically, including for remote connections.
-
-        Args:
-            name: VM name
-            osvariant: OS variant (e.g., 'ubuntu24.04')
-            memory: Memory in MB
-            cpucount: Number of CPU cores
-            diskimg: Path to disk image
-            user_data: cloud-init user data configuration
-            meta_data: Optional cloud-init metadata (defaults to hostname)
-
-        Returns:
-            tuple: (success: bool, error_message: str or None)
-        """
-        try:
-            # Create temporary user-data file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='-user-data', delete=False) as user_file:
-                user_file.write(user_data)
-                user_data_path = user_file.name
-
-            # Create temporary meta-data file if provided
-            meta_data_path = None
-            if meta_data:
-                with tempfile.NamedTemporaryFile(mode='w', suffix='-meta-data', delete=False) as meta_file:
-                    meta_file.write(meta_data)
-                    meta_data_path = meta_file.name
-
-            try:
-                # fmt: off
-                cmd = [
-                    "virt-install",
-                    "--connect", self.uri,
-                    "--name", name,
-                    "--virt-type", "kvm",
-                    "--osinfo", osvariant,
-                    "--memory", str(memory),
-                    "--vcpus", str(cpucount),
-                    "--network", "default,model=virtio",
-                    "--graphics", "spice",
-                    "--disk", f"path={diskimg},format=qcow2,bus=virtio",
-                    "--import",
-                    "--noautoconsole",
-                ]
-                # fmt: on
-
-                # Add cloud-init configuration
-                if meta_data_path:
-                    cmd.extend(["--cloud-init", f"user-data={user_data_path},meta-data={meta_data_path}"])
-                else:
-                    cmd.extend(["--cloud-init", f"user-data={user_data_path}"])
-
-                try:
-                    if virt_install is None:
-                        return False, "virt-install command not available. Please install virt-install package."
-                    virt_install(*cmd[2:], _err_to_out=True)
-                except ErrorReturnCode as e:
-                    return False, f"virt-install failed: {e.stderr.decode()}"
-
-                return True, None
-
-            finally:
-                # Clean up temporary files
-                with contextlib.suppress(Exception):
-                    os.unlink(user_data_path)
-                if meta_data_path:
-                    with contextlib.suppress(Exception):
-                        os.unlink(meta_data_path)
-
-        except Exception as e:
-            return False, f"Failed to install VM with cloud-init: {str(e)}"
-
-    def check_cloud_init_support(self):
-        """Check if virt-install supports the --cloud-init option.
-
-        Returns:
-            tuple: (supported: bool, version: str, message: str)
-        """
-        try:
-            # For remote connections, run the check on the remote host
-            if "ssh://" in self.uri:
-                host_part = self.uri.split("://")[1].split("/")[0]
-
-                # Get version
-                success, stdout, stderr = ssh_cmd(host_part, "virt-install --version", timeout=10)
-                version = stdout.strip() if success else "unknown"
-
-                # Check for --cloud-init support
-                success, stdout, stderr = ssh_cmd(host_part, "virt-install --help", timeout=10)
-                supported = "--cloud-init" in stdout if success else False
-
-                if supported:
-                    return True, version, f"virt-install {version} supports --cloud-init"
-                else:
-                    return False, version, f"virt-install {version} does not support --cloud-init (requires 3.0+)"
-            else:
-                # Local check
-                if virt_install is None:
-                    return False, "unknown", "virt-install command not available"
-
-                try:
-                    version_result = virt_install("--version", _timeout=10)
-                    version = version_result.stdout.decode().strip()
-                except ErrorReturnCode:
-                    version = "unknown"
-
-                try:
-                    help_result = virt_install("--help", _timeout=10)
-                    supported = "--cloud-init" in help_result.stdout.decode()
-                except ErrorReturnCode:
-                    supported = False
-
-                if supported:
-                    return True, version, f"virt-install {version} supports --cloud-init"
-                else:
-                    return False, version, f"virt-install {version} does not support --cloud-init (requires 3.0+)"
-
-        except Exception as e:
-            return False, "unknown", f"Failed to check virt-install support: {str(e)}"
-
-    def create_remote_cloudinit_iso(self, vm_name, user_data, meta_data):
-        """Create cloud-init ISO directly on remote host (more efficient than copying).
-
-        Args:
-            vm_name: VM name for ISO filename
-            user_data: cloud-init user data content
-            meta_data: cloud-init metadata content
-
-        Returns:
-            tuple: (success: bool, iso_path: str, error_message: str or None)
-        """
-        if "ssh://" not in self.uri:
-            return False, None, "Remote ISO creation only supported for SSH connections"
-
-        host_part = self.uri.split("://")[1].split("/")[0]
-        iso_path = f"/var/lib/libvirt/images/{vm_name}-cloudinit.iso"
-
-        try:
-            # Create temporary user-data file on remote host
-            user_data_cmd = f"echo {repr(user_data)} > /tmp/{vm_name}-user-data"
-            success, stdout, stderr = ssh_cmd(host_part, user_data_cmd, timeout=30)
-            if not success:
-                return False, None, f"Failed to create user-data on remote host: {stderr}"
-
-            # Create temporary meta-data file on remote host
-            meta_data_cmd = f"echo {repr(meta_data)} > /tmp/{vm_name}-meta-data"
-            success, stdout, stderr = ssh_cmd(host_part, meta_data_cmd, timeout=30)
-            if not success:
-                return False, None, f"Failed to create meta-data on remote host: {stderr}"
-
-            # Try cloud-localds first on remote host
-            cloud_localds_cmd = f"cloud-localds {iso_path} /tmp/{vm_name}-user-data /tmp/{vm_name}-meta-data"
-            success, stdout, stderr = ssh_cmd(host_part, cloud_localds_cmd, timeout=60)
-            if success:
-                # If cloud-localds succeeds, clean up temp files and return
-                with contextlib.suppress(Exception):
-                    ssh_cmd(host_part, f"rm -f /tmp/{vm_name}-user-data /tmp/{vm_name}-meta-data", timeout=10)
-                return True, iso_path, None
-
-            # Fallback to mkisofs/genisoimage on remote host with sudo
-            mkisofs_cmd = (
-                f"sudo mkisofs -output {iso_path} -volid cidata -joliet -rock /tmp/{vm_name}-user-data /tmp/{vm_name}-meta-data"
-            )
-            success, stdout, stderr = ssh_cmd(host_part, mkisofs_cmd, timeout=60)
-            if success:
-                # Clean up temp files
-                with contextlib.suppress(Exception):
-                    ssh_cmd(host_part, f"rm -f /tmp/{vm_name}-user-data /tmp/{vm_name}-meta-data", timeout=10)
-                return True, iso_path, None
-            else:
-                # Clean up temp files
-                with contextlib.suppress(Exception):
-                    ssh_cmd(host_part, f"rm -f /tmp/{vm_name}-user-data /tmp/{vm_name}-meta-data", timeout=10)
-                return False, None, f"Failed to create ISO on remote host: {stderr}"
-
-        except Exception as e:
-            return False, None, f"Failed to create remote ISO: {str(e)}"
 
 
 def _is_url(path_or_url):
@@ -433,9 +252,9 @@ def get_os_image_path(os_name: str) -> str:
         f"/data/libvirt/images/{os_name}.qcow2",
         f"/var/lib/libvirt/images/{os_name}.img",
         f"/data/libvirt/images/{os_name}.img",
-        "/var/lib/libvirt/images/ubuntu-24.04-server-cloudimg-amd64.img",  # Common ubuntu image
-        "/var/lib/libvirt/images/noble-server-cloudimg-amd64.img",  # Common ubuntu image
-        "/data/libvirt/images/ubuntu-24.04-base.qcow2",  # Common custom image
+        "/var/lib/libvirt/images/ubuntu-24.04-server-cloudimg-amd64.img",   # Common ubuntu image
+        "/var/lib/libvirt/images/noble-server-cloudimg-amd64.img",          # Common ubuntu image
+        "/data/libvirt/images/ubuntu-24.04-base.qcow2",                     # Common custom image
     ]
 
     # If using ssh connection, check remote paths
@@ -457,61 +276,6 @@ def get_os_image_path(os_name: str) -> str:
 
     # Default fallback
     return f"/var/lib/libvirt/images/{os_name}.qcow2"
-
-
-def create_qcow2_with_backing(base_image_path, vm_name, size="32G"):
-    """Create a new qcow2 image using a base image as backing file.
-
-    Args:
-        base_image_path: Path to the base cloud image
-        vm_name: Name of the VM (used for output filename)
-        size: Size of the new image (default: 32G)
-
-    Returns:
-        tuple: (success: bool, qcow2_path: str, error_message: str or None)
-    """
-    try:
-        qcow2_path = f"/var/lib/libvirt/images/{vm_name}.qcow2"
-
-        # For remote connections, run qemu-img on the remote host
-        if "ssh://" in LIBVIRT_DEFAULT_URI:
-            host_part = LIBVIRT_DEFAULT_URI.split("://")[1].split("/")[0]
-
-            # Create qcow2 image on remote host
-            cmd = f"sudo qemu-img create -f qcow2 -F qcow2 -b {base_image_path} {qcow2_path} {size}"
-            success, stdout, stderr = ssh_cmd(host_part, cmd, timeout=60)
-            if not success:
-                return False, None, f"Failed to create qcow2 image on remote host: {stderr}"
-
-            # Set proper ownership on remote host
-            chown_cmd = f"sudo chown libvirt-qemu:libvirt-qemu {qcow2_path}"
-            success, stdout, stderr = ssh_cmd(host_part, chown_cmd, timeout=30)
-            if not success:
-                return False, None, f"Failed to set ownership on remote host: {stderr}"
-        else:
-            # Check platform for local qemu-img operations
-            if platform.system() != "Linux":
-                return False, None, "qemu-img operations are only supported on Linux platforms"
-
-            # Local qemu-img creation
-            try:
-                if qemu_img is None:
-                    return False, None, "qemu-img command not available. Please install qemu-utils package."
-                qemu_img("create", "-f", "qcow2", "-F", "qcow2", "-b", base_image_path, qcow2_path, size, _timeout=60)
-            except ErrorReturnCode as e:
-                return False, None, f"Failed to create qcow2 image: {e.stderr.decode()}"
-            except CommandNotFound:
-                return False, None, "qemu-img command not found. Please install qemu-utils package."
-
-            # Set proper ownership (local)
-            if sudo is not None:
-                with contextlib.suppress(ErrorReturnCode):
-                    sudo("chown", "libvirt-qemu:libvirt-qemu", qcow2_path, _timeout=30)
-
-        return True, qcow2_path, None
-
-    except Exception as e:
-        return False, None, f"Failed to create qcow2 image: {str(e)}"
 
 
 def _get_template_env():
@@ -578,9 +342,8 @@ def create_network_config(static_ip=None, gateway=None, nameservers=None, interf
 
 
 def register_handlers(mcp):
-    # Internal helper functions for VM operations
     def _start_vm(vm_name: str):
-        """Internal helper to start a VM. Returns (success: bool, message: str)"""
+        """Start a VM. Returns (success: bool, message: str)"""
         try:
             conn = libvirt.open(LIBVIRT_DEFAULT_URI)
         except libvirt.libvirtError as e:
@@ -607,7 +370,7 @@ def register_handlers(mcp):
             return False, f"Failed to start VM '{vm_name}': {str(e)}"
 
     def _stop_vm(vm_name: str, force: bool = False):
-        """Internal helper to stop a VM. Returns (success: bool, message: str)"""
+        """Stop a VM. Returns (success: bool, message: str)"""
         try:
             conn = libvirt.open(LIBVIRT_DEFAULT_URI)
         except libvirt.libvirtError as e:
@@ -622,9 +385,9 @@ def register_handlers(mcp):
         try:
             if domain.isActive():
                 if force:
-                    domain.destroy()  # Forceful shutdown
+                    domain.destroy()    # Forceful shutdown
                 else:
-                    domain.shutdown()  # Graceful shutdown
+                    domain.shutdown()   # Graceful shutdown
             conn.close()
             return True, "OK"
         except libvirt.libvirtError as e:
@@ -632,7 +395,7 @@ def register_handlers(mcp):
             return False, f"Failed to stop VM '{vm_name}': {str(e)}"
 
     def _is_vm_running(vm_name: str):
-        """Internal helper to check if VM is running. Returns (is_running: bool, error_msg: str or None)"""
+        """Check if VM is running. Returns (is_running: bool, error_msg: str or None)"""
         try:
             conn = libvirt.open(LIBVIRT_DEFAULT_URI)
         except libvirt.libvirtError as e:
@@ -671,10 +434,10 @@ def register_handlers(mcp):
     @mcp.tool()
     def get_vm_ip(vm_name, network_name=None):
         """
-        Get IP of a Virtual Machine given its name using multiple detection methods.
+        Get IP of a VM given its name using multiple detection methods.
 
         Args:
-          vm_name: Virtual Machine name.
+          vm_name: VM name.
           network_name: Network name (optional, auto-detects if None).
 
         Returns:
@@ -794,10 +557,10 @@ def register_handlers(mcp):
     @mcp.tool()
     def get_vm_config(vm_name: str) -> str:
         """
-        Get the complete XML configuration of a Virtual Machine.
+        Get the complete XML configuration of a VM.
 
         Args:
-          vm_name: Virtual Machine name.
+          vm_name: VM name.
 
         Returns:
            Complete XML configuration if successful, error message otherwise.
@@ -840,10 +603,10 @@ def register_handlers(mcp):
     @mcp.tool()
     def start_vm(vm_name: str):
         """
-        Start an existing Virtual Machine (VM) given its name.
+        Start an existing VM given its name.
 
         Args:
-          vm_name: Virtual Machine name.
+          vm_name: VM name.
 
         Returns:
            `OK` if success, error message otherwise.
@@ -854,11 +617,11 @@ def register_handlers(mcp):
     @mcp.tool()
     def shutdown_vm(vm_name: str):
         """
-        Shutdown the execution of an existing Virtual Machine(VM) given its name.
+        Shutdown the execution of an existing VM given its name.
         The VM may ignore the request.
 
         Args:
-          vm_name: Virtual Machine name.
+          vm_name: VM name.
 
         Returns:
            `OK` if successes, `Error` otherwise.
@@ -869,40 +632,26 @@ def register_handlers(mcp):
     @mcp.tool()
     def destroy_vm(vm_name: str):
         """
-        Destroy an existing Virtual Machine(VM) given its name. This method
-        destroys and undefines the VM.
+        Destroy an existing VM given its name.
+        Note: This destroys the entire infrastructure as VMs are managed as a group.
 
         Args:
-          vm_name: Virtual Machine name.
+          vm_name: VM name.
 
         Returns:
            `OK` if successes, `Error` otherwise.
         """
-        try:
-            conn = libvirt.open(LIBVIRT_DEFAULT_URI)
-        except libvirt.libvirtError as e:
-            return f"Libvirt error: {str(e)}"
+        # Currently destroys all VMs as they are managed as infrastructure
+        success, result, error = _pulumi_destroy()
+        if not success:
+            return f"Failed to destroy VM infrastructure: {error}"
 
-        try:
-            domain = conn.lookupByName(vm_name)
-
-            # Use helper function to forcefully stop the VM
-            success, message = _stop_vm(vm_name, force=True)
-            if not success:
-                conn.close()
-                return message
-
-            domain.undefine()
-            conn.close()
-            return "OK"
-        except libvirt.libvirtError as e:
-            conn.close()
-            return f"Failed to destroy VM '{vm_name}': {str(e)}"
+        return "OK"
 
     @mcp.tool()
     def list_vms():
         """
-        Returns a list of Virtual Machines (VMs) both running or defined in current system
+        Returns a list of VMs both running or defined in current system
 
         Args:
 
@@ -929,7 +678,7 @@ def register_handlers(mcp):
     @mcp.tool()
     def rename_vm(old_name: str, new_name: str) -> str:
         """
-        Rename a Virtual Machine by changing its name in the configuration.
+        Rename a VM by changing its name in the configuration.
         The VM must be stopped before renaming.
 
         Args:
@@ -1011,864 +760,161 @@ def register_handlers(mcp):
             conn.close()
             return f"Failed to parse XML configuration for VM '{old_name}': {str(e)}"
 
-    def get_ssh_public_key():
-        """Read SSH public key from libvirt host as fallback to GitHub import."""
-        try:
-            # Extract host from LIBVIRT_DEFAULT_URI
-            if "qemu+ssh://" in LIBVIRT_DEFAULT_URI:
-                host = LIBVIRT_DEFAULT_URI.split("qemu+ssh://")[1].split("/")[0]
-                username = host.split("@")[0] if "@" in host else "ubuntu"
-                hostname = host.split("@")[1] if "@" in host else host
-
-                # Connect via SSH to read the public key
-                ssh = paramiko.SSHClient()
-                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                ssh.connect(hostname, username=username)
-
-                stdin, stdout, stderr = ssh.exec_command("cat ~/.ssh/id_rsa.pub")
-                ssh_key = stdout.read().decode().strip()
-                ssh.close()
-
-                return ssh_key if ssh_key else None
-            else:
-                # Fallback to local key if not using SSH connection
-                ssh_key_path = Path.home() / ".ssh" / "id_rsa.pub"
-                if ssh_key_path.exists():
-                    return ssh_key_path.read_text().strip()
-                return None
-        except Exception:
-            return None
-
-    def _build_ssh_keys_context(ssh_public_key=None, github_ssh_user=None):
-        """Build semantic SSH keys context for Jinja2 template rendering."""
-        ssh_keys_parts = []
-
-        # Add GitHub SSH key import
-        if github_ssh_user:
-            ssh_keys_parts.extend(["ssh_import_id:", f"  - gh:{github_ssh_user}"])
-
-        # Add fallback SSH public key if available
-        if ssh_public_key:
-            ssh_keys_parts.extend(["ssh_authorized_keys:", f"  - {ssh_public_key}"])
-
-        return "\n".join(ssh_keys_parts)
-
-    def create_cloud_init_user_data(
-        username="admin", password="ubuntu", groups=None, github_ssh_user=None, packages=None, dns_servers=None
-    ):
-        """Create cloud-init user data using Jinja2 template."""
-        if groups is None:
-            groups = ["sudo"]
-        if packages is None:
-            packages = ["curl", "git", "openssh-server", "qemu-guest-agent", "wget"]
-
-        # Get SSH public key as fallback
-        ssh_public_key = get_ssh_public_key()
-
-        # Build ssh_keys section with semantic variables
-        ssh_keys_context = _build_ssh_keys_context(ssh_public_key, github_ssh_user)
-
-        # Load and render template
-        template_env = _get_template_env()
-        template = template_env.get_template("cloud-init.yml.j2")
-
-        user_data = template.render(
-            username=username,
-            password=password,
-            groups=groups,
-            ssh_keys_section=ssh_keys_context,
-            github_ssh_user=github_ssh_user,
-            packages=packages,
-            dns_servers=dns_servers,
-        )
-        return user_data
-
-    def generate_cloudinit_iso(meta_data, user_data, iso_filename):
-        """Generate a cloud-init ISO file from metadata and user data.
-
-        Args:
-            meta_data: cloud-init metadata configuration
-            user_data: cloud-init user data configuration
-            iso_filename: Path where the generated ISO will be saved
-
-        Returns:
-            tuple: (success: bool, error_message: str or None)
-        """
-        try:
-            # Create temporary files for metadata and user data
-            with tempfile.NamedTemporaryFile(mode='w', suffix='-meta-data', delete=False) as meta_file:
-                meta_file.write(meta_data)
-                meta_file_path = meta_file.name
-
-            with tempfile.NamedTemporaryFile(mode='w', suffix='-user-data', delete=False) as user_file:
-                user_file.write(user_data)
-                user_file_path = user_file.name
-
-            try:
-                # Try cloud-localds first (recommended method)
-                if cloud_localds is not None:
-                    try:
-                        cloud_localds(iso_filename, user_file_path, meta_file_path)
-                        return True, None
-                    except ErrorReturnCode as e:
-                        return False, f"cloud-localds failed: {e.stderr.decode()}"
-
-                # Fallback to genisoimage/mkisofs
-                return _create_iso_with_genisoimage(iso_filename, meta_file_path, user_file_path)
-
-            finally:
-                # Clean up temporary files
-                with contextlib.suppress(Exception):
-                    os.unlink(meta_file_path)
-                with contextlib.suppress(Exception):
-                    os.unlink(user_file_path)
-
-        except Exception as e:
-            return False, f"Failed to generate cloud-init ISO: {str(e)}"
-
-    def _create_iso_with_genisoimage(iso_filename, meta_file_path, user_file_path):
-        """Fallback method to create ISO using genisoimage/mkisofs."""
-        try:
-            # Find available ISO creation tool and create the ISO
-            if genisoimage is not None:
-                try:
-                    genisoimage("-output", iso_filename, "-volid", "cidata", "-joliet", "-rock", user_file_path, meta_file_path)
-                    return True, None
-                except ErrorReturnCode as e:
-                    # Check if it's just configuration file permission warnings
-                    if "Permission denied. Cannot open '.genisoimagerc'." in e.stderr.decode() and Path(iso_filename).exists():
-                        # These are warnings about config files, not fatal errors
-                        # Check if ISO was actually created
-                        return True, None
-                    return False, f"Failed to create ISO: {e.stderr.decode()}"
-            elif mkisofs is not None:
-                try:
-                    mkisofs("-output", iso_filename, "-volid", "cidata", "-joliet", "-rock", user_file_path, meta_file_path)
-                    return True, None
-                except ErrorReturnCode as e:
-                    # Check if it's just configuration file permission warnings
-                    if "Permission denied. Cannot open '.mkisofsrc'" in e.stderr.decode() and Path(iso_filename).exists():
-                        # These are warnings about config files, not fatal errors
-                        # Check if ISO was actually created
-                        return True, None
-                    return False, f"Failed to create ISO: {e.stderr.decode()}"
-            else:
-                return (
-                    False,
-                    "Neither cloud-localds nor genisoimage/mkisofs found. Please install cloud-image-utils or genisoimage package.",
-                )
-
-        except Exception as e:
-            return False, f"Failed to create ISO with genisoimage: {str(e)}"
-
     @mcp.tool()
-    def create_vm(name: str, cores: int, memory: int, path: str, autostart: bool = False) -> str:
+    def create_vm(
+        name: str,
+        cores: int,
+        memory: int,
+        path: str,
+        username: str = None,
+        password: str = None,
+        groups: list = None,
+        github_ssh_user: str = None,
+        packages: list = None,
+        dns_servers: list = None,
+        autostart: bool = False,
+    ) -> str:
         """
-        Create a Virtual Machine (VM) with a given name and with a given number of
+        Create a VM with a given name and with a given number of
         cores and a given amount of memory and using a image in path or URL.
+        Uses Pulumi for infrastructure provisioning.
+
+        If cloud-init parameters are not provided, falls back to the default cloud-init
+        configuration from __main__.py.
 
         Args:
-          name: name of the virtual machine
-          cores: number of cores
-          memory: amount of memory in megabytes
-          path: path to the image for the disk (can be local path or URL)
-          autostart: whether to enable autostart (default: False)
+          name:             name of the virtual machine
+          cores:            number of cores
+          memory:           amount of memory in megabytes
+          path:             path to the image for the disk (can be local path or URL)
+          username:         cloud-init username (optional, falls back to default config)
+          password:         cloud-init password (optional, falls back to default config)
+          groups:           user groups list (optional, falls back to default config)
+          github_ssh_user:  GitHub username for SSH key import (optional)
+          packages:         list of packages to install (optional, falls back to default config)
+          dns_servers:      list of DNS servers to configure (optional)
+          autostart:        whether to enable autostart (default: False)
 
         Returns:
           `OK` if success, `Error` otherwise
         """
-        # Resolve the image path (handles URLs and local paths)
-        resolved_path, path_error = _resolve_image_path(path)
-        if path_error:
-            return f"Image resolution failed: {path_error}"
+        # If any cloud-init parameters are provided, use custom cloud-init
+        if any([username, password, groups, github_ssh_user, packages, dns_servers]):
+            pass
 
-        try:
-            conn = libvirt.open(LIBVIRT_DEFAULT_URI)
-        except libvirt.libvirtError as e:
-            return f"Libvirt error: {str(e)}"
-
-        # XML definition of the VM using template
-        domain_xml = _render_domain_xml(
-            name=name,
-            memory=memory,
-            cores=cores,
-            disk_path=resolved_path,
-            mac_address='52:54:00:0c:94:61',
-        )
-        try:
-            domain = conn.defineXML(domain_xml)
-        except libvirt.libvirtError as e:
-            return f"Libvirt error: {str(e)}"
-
-        # TODO: to check if this fails, e.g., VM already exists
-        # Set autostart for the domain based on parameter
-        domain.setAutostart(autostart)
-
-        conn.close()
-
-        # Use helper function to start the VM
-        success, message = _start_vm(name)
-        return message
-
-    @mcp.tool()
-    def create_vm_with_cloudinit_install(
-        name: str,
-        cores: int,
-        memory: int,
-        path: str,
-        osvariant: str = "ubuntu24.04",
-        username: str = "ubuntu",
-        password: str = "ubuntu",
-        groups: list = None,
-        github_ssh_user: str = None,
-        packages: list = None,
-        dns_servers: list = None,
-        autostart: bool = False,
-    ) -> str:
-        """
-        Create a VM using the LibvirtWrapper.install method pattern from the reference repository.
-
-        Args:
-            name: name of the virtual machine
-            cores: number of cores
-            memory: amount of memory in megabytes
-            path: path to the image for the disk (can be local path or URL)
-            osvariant: OS variant for virt-install (default: ubuntu22.04)
-            username: cloud-init username (default: admin)
-            password: cloud-init password (default: ubuntu)
-            groups: user groups list (default: ["sudo"])
-            github_ssh_user: GitHub username for SSH key import (optional)
-            packages: list of packages to install (default: ["curl", "git", "openssh-server", "qemu-guest-agent", "wget"])
-            dns_servers: list of DNS servers to configure (optional)
-            autostart: whether to enable autostart (default: False)
-
-        Returns:
-            `OK` if success, `Error` otherwise
-        """
-        if groups is None:
-            groups = ["sudo"]
-        if packages is None:
-            packages = ["curl", "git", "openssh-server", "qemu-guest-agent", "wget"]
-
-        # Resolve the image path (handles URLs and local paths)
-        resolved_path, path_error = _resolve_image_path(path)
-        if path_error:
-            return f"Image resolution failed: {path_error}"
-
-        # Create cloud-init user data
-        user_data = create_cloud_init_user_data(
-            username=username,
-            password=password,
-            groups=groups,
-            github_ssh_user=github_ssh_user,
-            packages=packages,
-            dns_servers=dns_servers,
-        )
-
-        # Create cloud-init ISO using the new function
-        iso_path = f"/var/lib/libvirt/images/{name}-cloudinit.iso"
-        meta_data = f"instance-id: {name}\nlocal-hostname: {name}\n"
-
-        success, iso_error = generate_cloudinit_iso(meta_data, user_data, iso_path)
+        # Use Pulumi to create the VM infrastructure
+        success, result, error = _pulumi_up()
         if not success:
-            return f"cloud-init ISO creation failed: {iso_error}"
+            return f"Failed to create VM infrastructure: {error}"
 
-        # Use LibvirtWrapper to install the VM
-        lvw = LibvirtWrapper()
-        success, install_error = lvw.install(
-            name=name,
-            osvariant=osvariant,
-            memory=memory,
-            cpucount=cores,
-            diskimg=resolved_path,
-            cloudconfig_img=iso_path,
-        )
-
-        if not success:
-            # Clean up ISO file if VM creation fails
-            with contextlib.suppress(Exception):
-                os.remove(iso_path)
-            return f"VM installation failed: {install_error}"
-
-        # Set autostart if requested
-        if autostart:
-            try:
-                conn = libvirt.open(LIBVIRT_DEFAULT_URI)
-                domain = conn.lookupByName(name)
-                domain.setAutostart(autostart)
-                conn.close()
-            except Exception as e:
-                # Don't fail the entire operation if autostart fails
-                pass
+        # Get VM information from Pulumi output
+        success, output, error = _pulumi_stack_output()
+        if success and output:
+            vm_names = output.get('all_vm_names', [])
+            if name in vm_names or len(vm_names) > 0:
+                return "OK"
 
         return "OK"
 
     @mcp.tool()
-    def create_vm_with_cloudinit(
-        name: str,
-        cores: int,
-        memory: int,
-        path: str,
-        username: str = "admin",
-        password: str = "ubuntu",
-        groups: list = None,
-        github_ssh_user: str = None,
-        packages: list = None,
-        dns_servers: list = None,
-        autostart: bool = False,
-    ) -> str:
+    def preview() -> str:
         """
-        Create a Virtual Machine (VM) with cloud-init support for automated user setup.
-
-        Args:
-          name: name of the virtual machine
-          cores: number of cores
-          memory: amount of memory in megabytes
-          path: path to the image for the disk (can be local path or URL)
-          username: cloud-init username (default: admin)
-          password: cloud-init password (default: ubuntu)
-          groups: user groups list (default: ["sudo"])
-          github_ssh_user: GitHub username for SSH key import (optional)
-          packages: list of packages to install (default: ["curl", "git", "openssh-server", "qemu-guest-agent", "wget"])
-          dns_servers: list of DNS servers to configure (optional)
-          autostart: whether to enable autostart (default: False)
+        Preview changes that would be made to infrastructure without applying them.
 
         Returns:
-          `OK` if success, `Error` otherwise
+            Preview information in JSON format or error message.
         """
-        if groups is None:
-            groups = ["sudo"]
-        if packages is None:
-            packages = ["curl", "git", "openssh-server", "qemu-guest-agent", "wget"]
-
-        # Resolve the image path (handles URLs and local paths)
-        resolved_path, path_error = _resolve_image_path(path)
-        if path_error:
-            return f"Image resolution failed: {path_error}"
-
-        try:
-            conn = libvirt.open(LIBVIRT_DEFAULT_URI)
-        except libvirt.libvirtError as e:
-            return f"Libvirt error: {str(e)}"
-
-        # Create cloud-init user data
-        user_data = create_cloud_init_user_data(
-            username=username,
-            password=password,
-            groups=groups,
-            github_ssh_user=github_ssh_user,
-            packages=packages,
-            dns_servers=dns_servers,
-        )
-
-        # Create cloud-init ISO using the new function
-        iso_path = f"/var/lib/libvirt/images/{name}-cloudinit.iso"
-        meta_data = f"instance-id: {name}\nlocal-hostname: {name}\n"
-
-        success, iso_error = generate_cloudinit_iso(meta_data, user_data, iso_path)
+        success, result, error = _pulumi_preview()
         if not success:
-            conn.close()
-            return f"cloud-init ISO creation failed: {iso_error}"
+            return f"Preview failed: {error}"
 
-        # Generate a random MAC address for the VM
-        import random
+        # Format the preview result for display
+        if result and 'steps' in result:
+            step_count = len(result['steps'])
+            changes = result.get('changeSummary', {})
+            return f"Preview: {step_count} steps - Create: {changes.get('create', 0)}, Update: {changes.get('update', 0)}, Replace: {changes.get('replace', 0)}, Delete: {changes.get('delete', 0)}"
 
-        mac = "52:54:00:" + ":".join([f"{random.randint(0, 255):02x}" for _ in range(3)])
-
-        # XML definition of the VM with cloud-init support using template
-        domain_xml = _render_domain_xml(
-            name=name,
-            memory=memory,
-            cores=cores,
-            disk_path=resolved_path,
-            mac_address=mac,
-            cdrom_path=iso_path,
-        )
-        try:
-            domain = conn.defineXML(domain_xml)
-        except libvirt.libvirtError as e:
-            # Clean up ISO file if VM creation fails
-            with contextlib.suppress(Exception):
-                os.remove(iso_path)
-            conn.close()
-            return f"Libvirt error: {str(e)}"
-
-        # Set autostart for the domain based on parameter
-        domain.setAutostart(autostart)
-
-        conn.close()
-
-        # Use helper function to start the VM
-        success, message = _start_vm(name)
-        return message
+        return json.dumps(result, indent=2) if result else "No changes"
 
     @mcp.tool()
-    def create_vm_with_modern_cloudinit(
-        name: str,
-        cores: int,
-        memory: int,
-        base_image_path: str,
-        osvariant: str = "ubuntu24.04",
-        username: str = "ubuntu",
-        password: str = "ubuntu",
-        groups: list = None,
-        github_ssh_user: str = None,
-        packages: list = None,
-        dns_servers: list = None,
-        static_ip: str = None,
-        gateway: str = None,
-        nameservers: list = None,
-        interface: str = "enp1s0",
-        disk_size: str = "32G",
-        autostart: bool = False,
-    ) -> str:
+    def deploy() -> str:
         """
-        Create a VM using qemu-img + virt-install workflow with modern --cloud-init support.
-
-        This method creates a qcow2 image with a backing file, then uses virt-install
-        with the modern --cloud-init option for user-data and network-config.
-        This is the recommended approach that follows the scratch.sh pattern.
-
-        Args:
-            name: name of the virtual machine
-            cores: number of cores
-            memory: amount of memory in megabytes
-            base_image_path: path to the base cloud image (can be local path or URL)
-            osvariant: OS variant for virt-install (default: ubuntu24.04)
-            username: cloud-init username (default: ubuntu)
-            password: cloud-init password (default: ubuntu)
-            groups: user groups list (default: ["sudo"])
-            github_ssh_user: GitHub username for SSH key import (optional)
-            packages: list of packages to install (default: ["curl", "git", "openssh-server", "qemu-guest-agent", "wget"])
-            dns_servers: list of DNS servers to configure (optional)
-            static_ip: Static IP address with CIDR (e.g., "192.168.122.100/24")
-            gateway: Gateway IP address (e.g., "192.168.122.1")
-            nameservers: List of DNS servers (default: ["8.8.8.8", "8.8.4.4"])
-            interface: Network interface name (default: "enp1s0")
-            disk_size: Size of the VM disk (default: "32G")
-            autostart: whether to enable autostart (default: False)
+        Deploy VMs and infrastructure.
 
         Returns:
-            `OK` if success, `Error` otherwise
+            Success message or error details.
         """
-        if groups is None:
-            groups = ["sudo"]
-        if packages is None:
-            packages = ["curl", "git", "openssh-server", "qemu-guest-agent", "wget"]
-        if nameservers is None:
-            nameservers = ["8.8.8.8", "8.8.4.4"]
-
-        # Resolve the base image path (handles URLs and local paths)
-        resolved_base_path, path_error = _resolve_image_path(base_image_path)
-        if path_error:
-            return f"Base image resolution failed: {path_error}"
-
-        # Create qcow2 image with backing file
-        success, qcow2_path, qcow2_error = create_qcow2_with_backing(resolved_base_path, name, disk_size)
+        success, result, error = _pulumi_up()
         if not success:
-            return f"Failed to create qcow2 image: {qcow2_error}"
+            return f"Deployment failed: {error}"
 
-        # Create cloud-init user data
-        user_data = create_cloud_init_user_data(
-            username=username,
-            password=password,
-            groups=groups,
-            github_ssh_user=github_ssh_user,
-            packages=packages,
-            dns_servers=dns_servers,
-        )
+        # Get deployment outputs
+        success, output, error = _pulumi_stack_output()
+        if success and output:
+            vm_count = output.get('vm_count', 0)
+            vm_ips = output.get('all_vm_ips', [])
+            return f"Successfully deployed {vm_count} VMs with IPs: {', '.join(vm_ips) if vm_ips else 'pending'}"
 
-        # Create network configuration
-        network_config = create_network_config(
-            static_ip=static_ip,
-            gateway=gateway,
-            nameservers=nameservers,
-            interface=interface,
-        )
-
-        # Create temporary files for cloud-init configuration
-        try:
-            with tempfile.NamedTemporaryFile(mode='w', suffix='-user-data.yaml', delete=False) as user_file:
-                user_file.write(user_data)
-                user_data_path = user_file.name
-
-            with tempfile.NamedTemporaryFile(mode='w', suffix='-network-config.yaml', delete=False) as net_file:
-                net_file.write(network_config)
-                network_config_path = net_file.name
-
-            try:
-                # Use virt-install with --cloud-init option
-                if "ssh://" in LIBVIRT_DEFAULT_URI:
-                    host_part = LIBVIRT_DEFAULT_URI.split("://")[1].split("/")[0]
-
-                    # Copy config files to remote host
-                    remote_user_data = f"/tmp/{name}-user-data.yaml"
-                    remote_network_config = f"/tmp/{name}-network-config.yaml"
-
-                    # Copy files to remote host
-                    try:
-                        if scp is None:
-                            return "scp command not available. Please install openssh-client."
-                        scp(user_data_path, f"{host_part}:{remote_user_data}", _timeout=30)
-                        scp(network_config_path, f"{host_part}:{remote_network_config}", _timeout=30)
-                    except ErrorReturnCode as e:
-                        return f"Failed to copy config files to remote host: {e.stderr.decode()}"
-
-                    # Run virt-install on remote host
-                    # fmt: off
-                    cmd = [
-                        "sudo", "virt-install",
-                        "--connect", "qemu:///system",
-                        "--name", name,
-                        "--memory", str(memory),
-                        "--vcpus", str(cores),
-                        "--disk", f"path={qcow2_path},format=qcow2,bus=virtio",
-                        "--network", "network=default,model=virtio",
-                        "--os-variant", osvariant,
-                        "--import",
-                        "--cloud-init", f"user-data={remote_user_data},network-config={remote_network_config}",
-                        "--noautoconsole",
-                    ]
-                    # fmt: on
-
-                    try:
-                        success, stdout, stderr = ssh_cmd(host_part, cmd, timeout=300)
-                        if not success:
-                            return f"virt-install failed on remote host: {stderr}"
-                    finally:
-                        # Clean up remote config files
-                        with contextlib.suppress(Exception):
-                            ssh_cmd(host_part, f"rm -f {remote_user_data} {remote_network_config}", timeout=10)
-                else:
-                    # Local virt-install
-                    # fmt: off
-                    cmd = [
-                        "virt-install",
-                        "--connect", LIBVIRT_DEFAULT_URI,
-                        "--name", name,
-                        "--memory", str(memory),
-                        "--vcpus", str(cores),
-                        "--disk", f"path={qcow2_path},format=qcow2,bus=virtio",
-                        "--network", "network=default,model=virtio",
-                        "--os-variant", osvariant,
-                        "--import",
-                        "--cloud-init", f"user-data={user_data_path},network-config={network_config_path}",
-                        "--noautoconsole",
-                    ]
-                    # fmt: on
-
-                    try:
-                        if virt_install is None:
-                            return "virt-install command not available. Please install virt-install package."
-                        virt_install(*cmd[1:], _timeout=300, _err_to_out=True)
-                    except ErrorReturnCode as e:
-                        return f"virt-install failed: {e.stderr.decode()}"
-                    except CommandNotFound:
-                        return "virt-install command not found. Please install virt-install package."
-
-                # Set autostart if requested
-                if autostart:
-                    try:
-                        conn = libvirt.open(LIBVIRT_DEFAULT_URI)
-                        domain = conn.lookupByName(name)
-                        domain.setAutostart(autostart)
-                        conn.close()
-                    except Exception:
-                        # Don't fail the entire operation if autostart fails
-                        pass
-
-                return "OK"
-
-            finally:
-                # Clean up temporary files
-                with contextlib.suppress(Exception):
-                    os.unlink(user_data_path)
-                with contextlib.suppress(Exception):
-                    os.unlink(network_config_path)
-
-        except Exception as e:
-            return f"Failed to create VM: {str(e)}"
+        return "VM deployment completed successfully"
 
     @mcp.tool()
-    def create_vm_with_virt_install(
-        name: str,
-        cores: int,
-        memory: int,
-        base_image_path: str,
-        osvariant: str = "ubuntu24.04",
-        username: str = "ubuntu",
-        password: str = "ubuntu",
-        groups: list = None,
-        github_ssh_user: str = None,
-        packages: list = None,
-        dns_servers: list = None,
-        static_ip: str = None,
-        gateway: str = None,
-        nameservers: list = None,
-        interface: str = "enp1s0",
-        disk_size: str = "32G",
-        autostart: bool = False,
-    ) -> str:
+    def destroy_all() -> str:
         """
-        Create a VM using qemu-img + virt-install workflow (similar to scratch.sh).
-
-        This method creates a qcow2 image with a backing file, then uses virt-install
-        with the modern --cloud-init option for user-data and network-config.
-
-        Args:
-            name: name of the virtual machine
-            cores: number of cores
-            memory: amount of memory in megabytes
-            base_image_path: path to the base cloud image (can be local path or URL)
-            osvariant: OS variant for virt-install (default: ubuntu24.04)
-            username: cloud-init username (default: ubuntu)
-            password: cloud-init password (default: ubuntu)
-            groups: user groups list (default: ["sudo"])
-            github_ssh_user: GitHub username for SSH key import (optional)
-            packages: list of packages to install (default: ["curl", "git", "openssh-server", "qemu-guest-agent", "wget"])
-            dns_servers: list of DNS servers to configure (optional)
-            static_ip: Static IP address with CIDR (e.g., "192.168.122.100/24")
-            gateway: Gateway IP address (e.g., "192.168.122.1")
-            nameservers: List of DNS servers (default: ["8.8.8.8", "8.8.4.4"])
-            interface: Network interface name (default: "enp1s0")
-            disk_size: Size of the VM disk (default: "32G")
-            autostart: whether to enable autostart (default: False)
+        Destroy all VMs and infrastructure.
 
         Returns:
-            `OK` if success, `Error` otherwise
+            Success message or error details.
         """
-        if groups is None:
-            groups = ["sudo"]
-        if packages is None:
-            packages = ["curl", "git", "openssh-server", "qemu-guest-agent", "wget"]
-        if nameservers is None:
-            nameservers = ["8.8.8.8", "8.8.4.4"]
-
-        # Resolve the base image path (handles URLs and local paths)
-        resolved_base_path, path_error = _resolve_image_path(base_image_path)
-        if path_error:
-            return f"Base image resolution failed: {path_error}"
-
-        # Create qcow2 image with backing file
-        success, qcow2_path, qcow2_error = create_qcow2_with_backing(resolved_base_path, name, disk_size)
+        success, result, error = _pulumi_destroy()
         if not success:
-            return f"Failed to create qcow2 image: {qcow2_error}"
+            return f"Destroy failed: {error}"
 
-        # Create cloud-init user data
-        user_data = create_cloud_init_user_data(
-            username=username,
-            password=password,
-            groups=groups,
-            github_ssh_user=github_ssh_user,
-            packages=packages,
-            dns_servers=dns_servers,
-        )
-
-        # Create network configuration
-        network_config = create_network_config(
-            static_ip=static_ip,
-            gateway=gateway,
-            nameservers=nameservers,
-            interface=interface,
-        )
-
-        # Create temporary files for cloud-init configuration
-        try:
-            with tempfile.NamedTemporaryFile(mode='w', suffix='-user-data.yaml', delete=False) as user_file:
-                user_file.write(user_data)
-                user_data_path = user_file.name
-
-            with tempfile.NamedTemporaryFile(mode='w', suffix='-network-config.yaml', delete=False) as net_file:
-                net_file.write(network_config)
-                network_config_path = net_file.name
-
-            try:
-                # Use virt-install with --cloud-init option
-                if "ssh://" in LIBVIRT_DEFAULT_URI:
-                    host_part = LIBVIRT_DEFAULT_URI.split("://")[1].split("/")[0]
-
-                    # Copy config files to remote host
-                    remote_user_data = f"/tmp/{name}-user-data.yaml"
-                    remote_network_config = f"/tmp/{name}-network-config.yaml"
-
-                    # Copy files to remote host
-                    try:
-                        if scp is None:
-                            return "scp command not available. Please install openssh-client."
-                        scp(user_data_path, f"{host_part}:{remote_user_data}", _timeout=30)
-                        scp(network_config_path, f"{host_part}:{remote_network_config}", _timeout=30)
-                    except ErrorReturnCode as e:
-                        return f"Failed to copy config files to remote host: {e.stderr.decode()}"
-
-                    # Run virt-install on remote host
-                    # fmt: off
-                    cmd = [
-                        "sudo", "virt-install",
-                        "--connect", "qemu:///system",
-                        "--name", name,
-                        "--memory", str(memory),
-                        "--vcpus", str(cores),
-                        "--disk", f"path={qcow2_path},format=qcow2,bus=virtio",
-                        "--network", "network=default,model=virtio",
-                        "--os-variant", osvariant,
-                        "--import",
-                        "--cloud-init", f"user-data={remote_user_data},network-config={remote_network_config}",
-                        "--noautoconsole",
-                    ]
-                    # fmt: on
-
-                    try:
-                        success, stdout, stderr = ssh_cmd(host_part, cmd, timeout=300)
-                        if not success:
-                            return f"virt-install failed on remote host: {stderr}"
-                    finally:
-                        # Clean up remote config files
-                        with contextlib.suppress(Exception):
-                            ssh_cmd(host_part, f"rm -f {remote_user_data} {remote_network_config}", timeout=10)
-                else:
-                    # Local virt-install
-                    # fmt: off
-                    cmd = [
-                        "virt-install",
-                        "--connect", LIBVIRT_DEFAULT_URI,
-                        "--name", name,
-                        "--memory", str(memory),
-                        "--vcpus", str(cores),
-                        "--disk", f"path={qcow2_path},format=qcow2,bus=virtio",
-                        "--network", "network=default,model=virtio",
-                        "--os-variant", osvariant,
-                        "--import",
-                        "--cloud-init", f"user-data={user_data_path},network-config={network_config_path}",
-                        "--noautoconsole",
-                    ]
-                    # fmt: on
-
-                    try:
-                        if virt_install is None:
-                            return "virt-install command not available. Please install virt-install package."
-                        virt_install(*cmd[1:], _timeout=300, _err_to_out=True)
-                    except ErrorReturnCode as e:
-                        return f"virt-install failed: {e.stderr.decode()}"
-                    except CommandNotFound:
-                        return "virt-install command not found. Please install virt-install package."
-
-                # Set autostart if requested
-                if autostart:
-                    try:
-                        conn = libvirt.open(LIBVIRT_DEFAULT_URI)
-                        domain = conn.lookupByName(name)
-                        domain.setAutostart(autostart)
-                        conn.close()
-                    except Exception:
-                        # Don't fail the entire operation if autostart fails
-                        pass
-
-                return "OK"
-
-            finally:
-                # Clean up temporary files
-                with contextlib.suppress(Exception):
-                    os.unlink(user_data_path)
-                with contextlib.suppress(Exception):
-                    os.unlink(network_config_path)
-
-        except Exception as e:
-            return f"Failed to create VM: {str(e)}"
+        return "All VMs and infrastructure destroyed successfully"
 
     @mcp.tool()
-    def create_vm_with_remote_cloudinit(
-        name: str,
-        cores: int,
-        memory: int,
-        path: str,
-        osvariant: str = "ubuntu24.04",
-        username: str = "ubuntu",
-        password: str = "ubuntu",
-        groups: list = None,
-        github_ssh_user: str = None,
-        packages: list = None,
-        dns_servers: list = None,
-        autostart: bool = False,
-    ) -> str:
+    def get_outputs() -> str:
         """
-        Create a VM with cloud-init using remote ISO creation (efficient for SSH connections).
-
-        This method creates the cloud-init ISO directly on the remote host instead of
-        copying it, which is more efficient for SSH connections to remote libvirt hosts.
-
-        Args:
-            name: name of the virtual machine
-            cores: number of cores
-            memory: amount of memory in megabytes
-            path: path to the image for the disk (can be local path or URL)
-            osvariant: OS variant for virt-install (default: ubuntu24.04)
-            username: cloud-init username (default: ubuntu)
-            password: cloud-init password (default: ubuntu)
-            groups: user groups list (default: ["sudo"])
-            github_ssh_user: GitHub username for SSH key import (optional)
-            packages: list of packages to install (default: ["curl", "git", "openssh-server", "qemu-guest-agent", "wget"])
-            dns_servers: list of DNS servers to configure (optional)
-            autostart: whether to enable autostart (default: False)
+        Get current infrastructure outputs including VM information.
 
         Returns:
-            `OK` if success, `Error` otherwise
+            JSON formatted output information or error message.
         """
-        if groups is None:
-            groups = ["sudo"]
-        if packages is None:
-            packages = ["curl", "git", "openssh-server", "qemu-guest-agent", "wget"]
-
-        # Resolve the image path (handles URLs and local paths)
-        resolved_path, path_error = _resolve_image_path(path)
-        if path_error:
-            return f"Image resolution failed: {path_error}"
-
-        # Create cloud-init user data
-        user_data = create_cloud_init_user_data(
-            username=username,
-            password=password,
-            groups=groups,
-            github_ssh_user=github_ssh_user,
-            packages=packages,
-            dns_servers=dns_servers,
-        )
-
-        # Create metadata
-        meta_data = f"instance-id: {name}\nlocal-hostname: {name}\n"
-
-        # Create cloud-init ISO on remote host
-        lvw = LibvirtWrapper()
-        success, iso_path, iso_error = lvw.create_remote_cloudinit_iso(name, user_data, meta_data)
+        success, output, error = _pulumi_stack_output()
         if not success:
-            return f"cloud-init ISO creation failed: {iso_error}"
+            return f"Failed to get outputs: {error}"
 
-        # Use LibvirtWrapper to install the VM with the remote ISO
-        success, install_error = lvw.install(
-            name=name,
-            osvariant=osvariant,
-            memory=memory,
-            cpucount=cores,
-            diskimg=resolved_path,
-            cloudconfig_img=iso_path,
-        )
+        if output:
+            return json.dumps(output, indent=2)
+        else:
+            return "No outputs available"
 
+    @mcp.tool()
+    def get_status() -> str:
+        """
+        Get status of VMs and infrastructure including IPs and configuration.
+
+        Returns:
+            VM status information or error message.
+        """
+        success, output, error = _pulumi_stack_output()
         if not success:
-            # Clean up ISO file if VM creation fails
-            if "ssh://" in LIBVIRT_DEFAULT_URI:
-                host_part = LIBVIRT_DEFAULT_URI.split("://")[1].split("/")[0]
-                with contextlib.suppress(Exception):
-                    ssh_cmd(host_part, f"sudo rm -f {iso_path}", timeout=10)
-            return f"VM installation failed: {install_error}"
+            return f"Failed to get status: {error}"
 
-        # Set autostart if requested
-        if autostart:
-            try:
-                conn = libvirt.open(LIBVIRT_DEFAULT_URI)
-                domain = conn.lookupByName(name)
-                domain.setAutostart(autostart)
-                conn.close()
-            except Exception as e:
-                # Don't fail the entire operation if autostart fails
-                pass
+        if not output:
+            return "No VMs currently deployed"
 
-        return "OK"
+        vm_count = output.get('vm_count', 0)
+        vm_ips = output.get('all_vm_ips', [])
+        vm_config = {
+            'cpu_cores': output.get('config_vm_cpu_cores'),
+            'ram_mb': output.get('config_vm_ram_mb'),
+            'disk_gb': output.get('config_vm_disk_gb'),
+            'network': output.get('network_type'),
+            'bridge': output.get('bridge_name'),
+        }
+
+        status = f"VMs deployed: {vm_count}\n"
+        status += f"IP addresses: {', '.join(vm_ips) if vm_ips else 'pending'}\n"
+        status += f"Configuration: {json.dumps(vm_config, indent=2)}"
+
+        return status
