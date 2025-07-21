@@ -2,9 +2,20 @@
 
 # shellcheck disable=SC2046,SC2086
 
+GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
+
+# get the root directory
+if [ -n "$GIT_ROOT" ]; then
+	TLD="$(git rev-parse --show-toplevel)"
+else
+	TLD="${SCRIPT_DIR}"
+fi
+ENV_FILE="${TLD}/.env"
+
 # Load environment variables
-if [ -f .env ]; then
-    export $(grep -v '^#' .env | xargs)
+if [ -f "${ENV_FILE}" ]; then
+    export $(grep -v '^#' ${ENV_FILE} | xargs)
 fi
 
 # Set defaults
