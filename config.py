@@ -46,7 +46,7 @@ image_format = config('IMAGE_FORMAT', default=pulumi.Config().get('image_format'
 provider = libvirt.Provider("libvirt", uri=libvirt_uri)
 
 # Jinja2 template environment
-template_dir = Path(__file__).parent.parent / "templates"
+template_dir = Path(__file__).parent / "templates"
 jinja_env = Environment(loader=FileSystemLoader(template_dir))
 
 
