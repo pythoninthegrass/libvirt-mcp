@@ -6,6 +6,7 @@ from config import (
     base_ip,
     gateway_ip,
     generate_cloud_init_with_static_ip,
+    generate_network_config,
     get_static_ip,
     image_format,
     libvirt_uri,
@@ -19,27 +20,98 @@ from config import (
     vm_name_prefix,
     vm_ram,
 )
+from decouple import config
+from jinja2 import Environment, FileSystemLoader
+from textwrap import dedent
 
 
 def create_cloud_init_disk(vm_index, vm_name):
     """Creates a cloud-init disk for the given VM index with static IP configuration."""
-    # Use simple cloud-init configuration
-    default_cloud_init = """
-    #cloud-config
-    users:
-    - name: ubuntu
-        sudo: ALL=(ALL) NOPASSWD:ALL
-        shell: /bin/bash
-    ssh_pwauth: true
-    chpasswd:
-    list: |
-        ubuntu:ubuntu
-    expire: false
-    """
+    use_jinja_templates = config("USE_JINJA_TEMPLATES", default=True, cast=bool)
+
+    if use_jinja_templates:
+        # Use the centralized cloud-init generation with static IP
+        try:
+            from pathlib import Path
+            
+            # Read SSH public key
+            ssh_public_key = ""
+            try:
+                ssh_key_path = Path.home() / ".ssh" / "id_rsa.pub"
+                if ssh_key_path.exists():
+                    ssh_public_key = ssh_key_path.read_text().strip()
+            except Exception as e:
+                print(f"Warning: Could not read SSH public key: {e}")
+            
+            # Get GitHub username from config or use default
+            github_ssh_user = config("GITHUB_SSH_USER", default="pythoninthegrass")
+            
+            # Collect all SSH keys (local + GitHub)
+            all_ssh_keys = []
+            if ssh_public_key:
+                all_ssh_keys.append(ssh_public_key)
+            
+            # Fetch GitHub SSH keys if username is provided
+            if github_ssh_user:
+                try:
+                    import urllib.request
+                    with urllib.request.urlopen(f"https://github.com/{github_ssh_user}.keys") as response:
+                        github_keys = response.read().decode('utf-8').strip().split('\n')
+                        github_keys = [key.strip() for key in github_keys if key.strip()]
+                        all_ssh_keys.extend(github_keys)
+                        print(f"Fetched {len(github_keys)} GitHub SSH keys for {github_ssh_user}")
+                except Exception as e:
+                    print(f"Warning: Failed to fetch GitHub SSH keys for {github_ssh_user}: {e}")
+            
+            # Format SSH keys section for cloud-init with all keys
+            ssh_keys_section = "ssh_authorized_keys:\n" + "\n".join(f"  - {key}" for key in all_ssh_keys) if all_ssh_keys else ""
+            
+            # Use the centralized template rendering with SSH keys
+            template_path = Path(__file__).parent / "templates"
+            env = Environment(loader=FileSystemLoader(template_path))
+            template = env.get_template("cloud-init.yml.j2")
+            
+            cloud_init_config = template.render(
+                username="ubuntu",
+                password="ubuntu",
+                groups=["sudo"],
+                packages=["curl", "git", "openssh-server", "qemu-guest-agent", "wget"],
+                dns_servers=["8.8.8.8", "8.8.4.4"],
+                ssh_keys_section=ssh_keys_section,
+                github_ssh_user=github_ssh_user,
+                hostname=vm_name,
+            )
+            
+            # Generate network configuration
+            network_config = generate_network_config(vm_index)
+            
+        except Exception as e:
+            # Fallback to simple config if template fails
+            print(f"Warning: Failed to render Jinja2 template, falling back to simple config: {e}")
+            use_jinja_templates = False
+
+    if not use_jinja_templates:
+        # Use simple cloud-init configuration (fallback)
+        # fmt: off
+        cloud_init_config = dedent("""
+        #cloud-config
+        users:
+          - name: ubuntu
+            sudo: ALL=(ALL) NOPASSWD:ALL
+            shell: /bin/bash
+        ssh_pwauth: true
+        chpasswd:
+          list: |
+            ubuntu:ubuntu
+          expire: false
+        """).strip()
+        # fmt: on
+        network_config = None
 
     return libvirt.CloudinitDisk(
         f"cloud-init-disk-{vm_index}",
-        user_data=default_cloud_init,
+        user_data=cloud_init_config,
+        network_config=network_config,
         pool=storage_pool,
         opts=pulumi.ResourceOptions(provider=provider),
     )
