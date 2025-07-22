@@ -1,3 +1,4 @@
+{# j2lint: disable=jinja-statements-indentation,jinja-statements-delimiter #}
 #cloud-config
 
 output: {all: '| tee -a /var/log/cloud-init.log'}   # store logs inside vm
@@ -10,18 +11,18 @@ package_update: true
 package_upgrade: true
 
 packages:
-{% for package in packages | default(['curl', 'git', 'openssh-server', 'qemu-guest-agent', 'wget']) -%}
+{%- for package in packages | default(['curl', 'git', 'openssh-server', 'qemu-guest-agent', 'wget']) %}
   - {{ package }}
-{% endfor %}
+{%- endfor %}
 
-{% if dns_servers %}
+{%- if dns_servers %}
 manage_resolv_conf: true
 resolv_conf:
   nameservers:
-{% for dns in dns_servers -%}
+{%- for dns in dns_servers %}
     - {{ dns }}
-{% endfor %}
-{% endif %}
+{%- endfor %}
+{%- endif %}
 
 users:
   - name: {{ username | default('admin') }}
@@ -42,9 +43,9 @@ runcmd:
   - systemctl enable --now qemu-guest-agent.service
   - mkdir -p /home/{{ username | default('admin') }}/.ssh
   - chmod 700 /home/{{ username | default('admin') }}/.ssh
-{% if github_ssh_user -%}
+{%- if github_ssh_user %}
   - wget -O - https://github.com/{{ github_ssh_user }}.keys | sudo tee -a /home/{{ username | default('admin') }}/.ssh/authorized_keys
-{% endif -%}
+{%- endif %}
   - chmod 600 /home/{{ username | default('admin') }}/.ssh/authorized_keys
   - chown -R {{ username | default('admin') }}:{{ username | default('admin') }} /home/{{ username | default('admin') }}/.ssh
 
