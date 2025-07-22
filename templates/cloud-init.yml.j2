@@ -41,12 +41,5 @@ chpasswd:
 
 runcmd:
   - systemctl enable --now qemu-guest-agent.service
-  - mkdir -p /home/{{ username | default('admin') }}/.ssh
-  - chmod 700 /home/{{ username | default('admin') }}/.ssh
-{%- if github_ssh_user %}
-  - wget -O - https://github.com/{{ github_ssh_user }}.keys | sudo tee -a /home/{{ username | default('admin') }}/.ssh/authorized_keys
-{%- endif %}
-  - chmod 600 /home/{{ username | default('admin') }}/.ssh/authorized_keys
-  - chown -R {{ username | default('admin') }}:{{ username | default('admin') }} /home/{{ username | default('admin') }}/.ssh
 
 final_message: "VM setup complete after $UPTIME seconds."
