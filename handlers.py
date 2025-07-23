@@ -194,7 +194,6 @@ def register_handlers(mcp):
             <console type='pty' tty='/dev/pts/2'>
             </console>
             <interface type='network'>
-            <mac address='52:54:00:0c:94:61'/>
             <source network='default'/>
             <model type='virtio'/>
             </interface>
