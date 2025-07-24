@@ -345,6 +345,109 @@ def create_network_config(static_ip=None, gateway=None, nameservers=None, interf
     return network_config
 
 
+class LibvirtWrapper:
+    """Wrapper class for libvirt operations with cloud-init support checking."""
+
+    def __init__(self, uri=None):
+        """Initialize LibvirtWrapper with optional URI."""
+        self.uri = uri or LIBVIRT_DEFAULT_URI
+
+    def check_cloud_init_support(self):
+        """Check if cloud-init is available and return version information.
+
+        Returns:
+            tuple: (supported: bool, version: str, message: str)
+        """
+        try:
+            # Try to check cloud-init version via SSH if remote connection
+            if "ssh://" in self.uri:
+                try:
+                    # Parse SSH connection info from URI
+                    # Format: qemu+ssh://user@host/system
+                    uri_parts = self.uri.split("://")[1]  # user@host/system
+                    host_part = uri_parts.split("/")[0]   # user@host
+
+                    result = ssh_cmd(host_part, "cloud-init --version", timeout=10)
+                    version = result.strip().split()[-1] if result else "unknown"
+                    return True, version, f"Cloud-init version {version} found on remote host"
+
+                except Exception as e:
+                    return False, "unknown", f"Could not check cloud-init on remote host: {e}"
+
+            else:
+                # Local check using sh
+                try:
+                    cloud_init = import_sh_cmd('cloud-init')
+                    if cloud_init is None:
+                        return False, "not_found", "Cloud-init not found locally"
+
+                    result = cloud_init("--version", _timeout=10)
+                    version = str(result).strip().split()[-1] if result else "unknown"
+                    return True, version, f"Cloud-init version {version} found locally"
+
+                except (CommandNotFound, ErrorReturnCode):
+                    return False, "not_found", "Cloud-init not found locally"
+
+        except Exception as e:
+            return False, "error", f"Error checking cloud-init support: {e}"
+
+
+def create_qcow2_with_backing(base_path, vm_name, storage_dir="/var/lib/libvirt/images"):
+    """Create a QCOW2 image with backing file.
+
+    Args:
+        base_path: Path to the base/backing image
+        vm_name: Name of the VM (used for output filename)
+        storage_dir: Directory to store the new image
+
+    Returns:
+        tuple: (success: bool, qcow2_path: str, error_message: str or None)
+    """
+    try:
+        import platform
+
+        # Check if we're on Linux or have remote connection
+        if platform.system() != "Linux" and "ssh://" not in LIBVIRT_DEFAULT_URI:
+            return False, None, "qemu-img operations are only supported on Linux or remote connections"
+
+        output_path = f"{storage_dir}/{vm_name}.qcow2"
+
+        if "ssh://" in LIBVIRT_DEFAULT_URI:
+            # Remote operation via SSH
+            try:
+                # Parse SSH connection info from URI
+                uri_parts = LIBVIRT_DEFAULT_URI.split("://")[1]  # user@host/system
+                host_part = uri_parts.split("/")[0]               # user@host
+
+                # Create qcow2 image with backing file on remote host
+                cmd = f"qemu-img create -f qcow2 -b {base_path} {output_path}"
+                result = ssh_cmd(host_part, cmd, timeout=60)
+
+                if result and "Formatting" in result:
+                    return True, output_path, None
+                else:
+                    return False, None, f"Failed to create qcow2 image: {result}"
+
+            except Exception as e:
+                return False, None, f"Failed to create qcow2 image via SSH: {e}"
+
+        else:
+            # Local operation using sh
+            try:
+                qemu_img = import_sh_cmd('qemu-img')
+                if qemu_img is None:
+                    return False, None, "qemu-img command not available"
+
+                result = qemu_img("create", "-f", "qcow2", "-b", base_path, output_path, _timeout=60)
+                return True, output_path, None
+
+            except (CommandNotFound, ErrorReturnCode) as e:
+                return False, None, f"Failed to create qcow2 image: {e}"
+
+    except Exception as e:
+        return False, None, f"Failed to create qcow2 image: {e}"
+
+
 def register_handlers(mcp):
     def _start_vm(vm_name: str):
         """Start a VM. Returns (success: bool, message: str)"""
