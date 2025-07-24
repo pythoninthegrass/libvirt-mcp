@@ -62,7 +62,7 @@ def generate_network_config(vm_index: int) -> str:
 
     template = jinja_env.get_template('network-config.yml.j2')
     return template.render(
-        interface='enp1s0', static_ip=f"{static_ip}/{network_cidr_suffix}", gateway=gateway_ip, nameservers=dns_servers
+        interface='ens3', static_ip=f"{static_ip}/{network_cidr_suffix}", gateway=gateway_ip, nameservers=dns_servers
     )
 
 
