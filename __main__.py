@@ -1,3 +1,23 @@
+#!/usr/bin/env -S uv run --script
+
+# /// script
+# requires-python = ">=3.11,<3.13"
+# dependencies = [
+#    "jinja2>=3.1.6",
+#    "libvirt-python>=11.3.0",
+#    "mcp[cli]>=1.7.1",
+#    "paramiko>=3.0.0",
+#    "pulumi>=3.0.0,<4.0.0",
+#    "pulumi-libvirt",
+#    "python-decouple>=3.8",
+#    "sh>=2.2.2",
+# ]
+# [tool.uv]
+# exclude-newer = "2025-08-01T00:00:00Z"
+# ///
+
+# pyright: reportMissingImports=false
+
 import pulumi
 import pulumi_libvirt as libvirt
 from config import (
@@ -33,7 +53,7 @@ def create_cloud_init_disk(vm_index, vm_name):
         # Use the centralized cloud-init generation with static IP
         try:
             from pathlib import Path
-            
+
             # Read SSH public key
             ssh_public_key = ""
             try:
@@ -42,15 +62,15 @@ def create_cloud_init_disk(vm_index, vm_name):
                     ssh_public_key = ssh_key_path.read_text().strip()
             except Exception as e:
                 print(f"Warning: Could not read SSH public key: {e}")
-            
+
             # Get GitHub username from config or use default
             github_ssh_user = config("GITHUB_SSH_USER", default="pythoninthegrass")
-            
+
             # Collect all SSH keys (local + GitHub)
             all_ssh_keys = []
             if ssh_public_key:
                 all_ssh_keys.append(ssh_public_key)
-            
+
             # Fetch GitHub SSH keys if username is provided
             if github_ssh_user:
                 try:
@@ -62,15 +82,15 @@ def create_cloud_init_disk(vm_index, vm_name):
                         print(f"Fetched {len(github_keys)} GitHub SSH keys for {github_ssh_user}")
                 except Exception as e:
                     print(f"Warning: Failed to fetch GitHub SSH keys for {github_ssh_user}: {e}")
-            
+
             # Format SSH keys section for cloud-init with all keys
             ssh_keys_section = "ssh_authorized_keys:\n" + "\n".join(f"  - {key}" for key in all_ssh_keys) if all_ssh_keys else ""
-            
+
             # Use the centralized template rendering with SSH keys
             template_path = Path(__file__).parent / "templates"
             env = Environment(loader=FileSystemLoader(template_path))
             template = env.get_template("cloud-init.yml.j2")
-            
+
             cloud_init_config = template.render(
                 username="ubuntu",
                 password="ubuntu",
@@ -81,10 +101,10 @@ def create_cloud_init_disk(vm_index, vm_name):
                 github_ssh_user=github_ssh_user,
                 hostname=vm_name,
             )
-            
+
             # Generate network configuration
             network_config = generate_network_config(vm_index)
-            
+
         except Exception as e:
             # Fallback to simple config if template fails
             print(f"Warning: Failed to render Jinja2 template, falling back to simple config: {e}")
