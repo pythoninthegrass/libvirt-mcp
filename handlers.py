@@ -313,7 +313,7 @@ def _render_domain_xml(name, memory, cores, disk_path, mac_address, cdrom_path=N
     )
 
 
-def create_network_config(static_ip=None, gateway=None, nameservers=None, interface="enp1s0"):
+def create_network_config(static_ip=None, gateway=None, nameservers=None, interface=None):
     """Create network configuration for cloud-init using Jinja2 template.
 
     Args:
@@ -331,6 +331,10 @@ def create_network_config(static_ip=None, gateway=None, nameservers=None, interf
     # Load and render template
     template_env = _get_template_env()
     template = template_env.get_template("network-config.yml.j2")
+
+    # If interface is None, use a fallback that works with the pattern match
+    if interface is None:
+        interface = "default"
 
     network_config = template.render(
         static_ip=static_ip,
