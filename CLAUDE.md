@@ -20,17 +20,29 @@ uv sync --group test
 ### Code Quality
 
 ```bash
-# Lint and format code
+# Lint and format python code
 ruff check
 ruff format
 
-# Run with auto-fix
+# Run ruff with auto-fix
 ruff check --fix
+
+# Lint jinja2 templates
+j2lint <directory_or_file>
+
+# Preview jinja2 rendering
+SSH_KEY=$(printf "ssh_authorized_keys:\n  - %s" "$(cat ~/.ssh/id_rsa.pub)")
+jinja2 -D ssh_keys_section="$SSH_KEY" -D username="ubuntu" --format=env templates/cloud-init.yml.j2
 ```
+
+### Markdown Editing Guidelines
+
+- When editing markdown files, always follow `markdownlint -c .markdownlint.jsonc <markdown_file>` linting rules.
 
 ### Testing
 
 #### Quick Test Commands
+
 ```bash
 # Run all tests (recommended)
 uv run tests/run_tests.py
@@ -47,6 +59,7 @@ pytest tests/test_handlers.py
 ```
 
 #### Test Categories
+
 ```bash
 # Run all tests by category
 uv run tests/test_handlers.py        # Core utility functions
@@ -62,6 +75,7 @@ pytest -m benchmark                # Performance tests
 ```
 
 #### Test Configuration
+
 ```bash
 # Test with different libvirt connections
 LIBVIRT_DEFAULT_URI=qemu:///system pytest                    # Local
@@ -75,6 +89,7 @@ pytest -v -s
 ```
 
 #### Test Development
+
 ```bash
 # Install test dependencies
 uv sync --group test
@@ -102,21 +117,41 @@ uv run server.py
 mcp dev server.py
 ```
 
-### Pulumi VM Management
+## Pulumi commands
 
 ```bash
-# Create base volume from existing image (run once)
-cd pulumi && ./create-base-volume.sh
+# Log into local pulumi
+pulumi login file://~
 
-# Deploy VMs
-cd pulumi && pulumi up --yes
+# Set empty passphrase
+PULUMI_CONFIG_PASSPHRASE=
 
-# Destroy VMs
-cd pulumi && pulumi destroy --yes
+# Create a new project
+pulumi new python
 
-# Preview changes
-cd pulumi && pulumi preview
+# Create a new stack
+pulumi stack init dev
+
+# Configure the stack
+pulumi config set vm_count 1
+
+# Preview the changes
+pulumi preview
+
+# Apply the changes
+pulumi up --yes
+
+# Destroy the changes
+pulumi destroy --yes
+
+# Remove the stack
+pulumi stack rm --yes
+
+# Check stack output
+pulumi stack output --json
 ```
+
+**Note**: On macOS, use `./run-pulumi.sh` instead of `pulumi` directly. This script handles SSH agent setup required for remote libvirt connections.
 
 ## Development Best Practices
 
@@ -196,15 +231,14 @@ The project implements a Model Context Protocol (MCP) server that bridges AI mod
 
 The architecture prioritizes clean separation between MCP protocol handling and libvirt operations, making it easy to extend with new VM management tools while maintaining consistent error handling and resource management patterns.
 
-## Markdown Editing Guidelines
-
-- When editing markdown files, always follow `markdownlint -c .markdownlint.jsonc <markdown_file>` linting rules.
-
 ## Debugging
 
 ```bash
 # List all VMs (running and stopped)
 virsh list --all
+
+# If virsh by itself isn't working be explicit
+LIBVIRT_DEFAULT_URI="qemu+ssh://user@libvirthost/system" virsh list --all
 
 # Start all stopped VMs
 virsh list --name --inactive | xargs -I {} virsh start {}
@@ -240,6 +274,7 @@ sudo chgrp libvirt /var/lib/libvirt/images
 sudo chmod g+rx /var/lib/libvirt/images
 
 # Mount and inspect cloud-init ISO
+ssh user@libvirthost "sudo virsh domblklist ubuntu-1"
 ssh user@libvirthost "sudo mount -o loop /data/libvirt/images/cloudinit-1.iso /mnt && ls -la /mnt/" 
 ssh user@libvirthost "sudo cat /mnt/user-data | base64 -d"
 
