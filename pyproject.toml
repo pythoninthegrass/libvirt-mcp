@@ -23,6 +23,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "deptry<1.0.0,>=0.23.0",
     "j2lint>=1.2.0",
     "jinja2-cli>=0.8.2",
     "pytest-asyncio<1.0.0,>=0.25.2",
@@ -49,6 +50,25 @@ markers = [
     "integration: marks tests as integration tests",
     "e2e: marks tests as end-to-end tests",
     "benchmark: marks performance benchmark tests"
+]
+
+[tool.deptry]
+# DEP003: transitive deps
+ignore = [
+    "DEP003"
+]
+
+[tool.deptry.per_rule_ignores]
+# DEP002: not used in codebase (excluding dev deps)
+DEP002 = [
+    "deptry",
+    "mypy",
+    "pyclean",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "ruff",
+    "uvicorn"
 ]
 
 [tool.ruff]
