@@ -4,7 +4,7 @@ This is an experimental mcp server for libvirt.
 
 ## Minimum Requirements
 
-* [python 3.11+](https://www.python.org/downloads/)
+* [python 3.12+](https://www.python.org/downloads/)
 * `ollama`:
 
     ```bash
@@ -75,9 +75,9 @@ uv sync
    ./run.sh
    ```
 
-## Demo
+<!-- ## Demo -->
 
-![Demo](https://github.com/MatiasVara/libvirt-mcp/wiki/images/libvirt-mcp-demo-claude.gif)
+<!-- ![Demo](https://github.com/MatiasVara/libvirt-mcp/wiki/images/libvirt-mcp-demo-claude.gif) -->
 
 ## Troubleshooting
 
@@ -86,10 +86,11 @@ For debugging, you can install mcp:
 ```bash
 # ubuntu/debian
 sudo apt install -y nodejs npm
-python -m pip install mcp
 
 # alma/fedora/rhel
-dnf install -y npm
+sudo dnf install -y npm
+
+# mcp library
 python -m pip install mcp
 ```
 
