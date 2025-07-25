@@ -1,0 +1,19 @@
+{# j2lint: disable=jinja-statements-indentation,jinja-statements-delimiter #}
+version: 2
+ethernets:
+  {{ interface | default('default') }}:
+    match:
+      name: "en*"
+    {% if static_ip and gateway -%}
+    dhcp4: false
+    addresses:
+      - {{ static_ip }}
+    gateway4: {{ gateway }}
+    nameservers:
+      addresses:
+        {% for ns in nameservers %}
+        - {{ ns }}
+        {% endfor %}
+    {% else -%}
+    dhcp4: true
+    {% endif %}

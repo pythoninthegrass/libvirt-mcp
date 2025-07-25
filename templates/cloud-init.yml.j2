@@ -1,0 +1,45 @@
+{# j2lint: disable=jinja-statements-indentation,jinja-statements-delimiter #}
+#cloud-config
+
+output: {all: '| tee -a /var/log/cloud-init.log'}   # store logs inside vm
+
+timezone: "America/Chicago"
+
+hostname: ubuntu
+
+package_update: true
+package_upgrade: true
+
+packages:
+{%- for package in packages | default(['curl', 'git', 'openssh-server', 'qemu-guest-agent', 'wget']) %}
+  - {{ package }}
+{%- endfor %}
+
+{%- if dns_servers %}
+manage_resolv_conf: true
+resolv_conf:
+  nameservers:
+{%- for dns in dns_servers %}
+    - {{ dns }}
+{%- endfor %}
+{%- endif %}
+
+users:
+  - name: {{ username | default('admin') }}
+    groups: {{ groups | default(['sudo']) | list }}
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: false
+    {{ ssh_keys_section | indent(4) }}
+
+ssh_pwauth: true
+
+chpasswd:
+  list: |
+    {{ username | default('admin') }}:{{ password | default('ubuntu') }}
+  expire: false
+
+runcmd:
+  - systemctl enable --now qemu-guest-agent.service
+
+final_message: "VM setup complete after $UPTIME seconds."
