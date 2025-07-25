@@ -252,9 +252,9 @@ def get_os_image_path(os_name: str) -> str:
         f"/data/libvirt/images/{os_name}.qcow2",
         f"/var/lib/libvirt/images/{os_name}.img",
         f"/data/libvirt/images/{os_name}.img",
-        "/var/lib/libvirt/images/ubuntu-24.04-server-cloudimg-amd64.img",   # Common ubuntu image
-        "/var/lib/libvirt/images/noble-server-cloudimg-amd64.img",          # Common ubuntu image
-        "/data/libvirt/images/ubuntu-24.04-base.qcow2",                     # Common custom image
+        "/var/lib/libvirt/images/ubuntu-24.04-server-cloudimg-amd64.img",  # Common ubuntu image
+        "/var/lib/libvirt/images/noble-server-cloudimg-amd64.img",  # Common ubuntu image
+        "/data/libvirt/images/ubuntu-24.04-base.qcow2",  # Common custom image
     ]
 
     # If using ssh connection, check remote paths
@@ -365,7 +365,7 @@ class LibvirtWrapper:
                     # Parse SSH connection info from URI
                     # Format: qemu+ssh://user@host/system
                     uri_parts = self.uri.split("://")[1]  # user@host/system
-                    host_part = uri_parts.split("/")[0]   # user@host
+                    host_part = uri_parts.split("/")[0]  # user@host
 
                     result = ssh_cmd(host_part, "cloud-init --version", timeout=10)
                     version = result.strip().split()[-1] if result else "unknown"
@@ -417,7 +417,7 @@ def create_qcow2_with_backing(base_path, vm_name, storage_dir="/var/lib/libvirt/
             try:
                 # Parse SSH connection info from URI
                 uri_parts = LIBVIRT_DEFAULT_URI.split("://")[1]  # user@host/system
-                host_part = uri_parts.split("/")[0]               # user@host
+                host_part = uri_parts.split("/")[0]  # user@host
 
                 # Create qcow2 image with backing file on remote host
                 cmd = f"qemu-img create -f qcow2 -b {base_path} {output_path}"
@@ -492,9 +492,9 @@ def register_handlers(mcp):
         try:
             if domain.isActive():
                 if force:
-                    domain.destroy()    # Forceful shutdown
+                    domain.destroy()  # Forceful shutdown
                 else:
-                    domain.shutdown()   # Graceful shutdown
+                    domain.shutdown()  # Graceful shutdown
             conn.close()
             return True, "OK"
         except libvirt.libvirtError as e:

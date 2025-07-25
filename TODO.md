@@ -1,6 +1,6 @@
 # TODO
 
-* Fix duplicate cloud-init gh ssh key diags
+* ~~Fix duplicate cloud-init gh ssh key diags~~ ✅
 * Update tests
 * Update docs
 * Add task runners

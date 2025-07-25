@@ -45,7 +45,44 @@ from jinja2 import Environment, FileSystemLoader
 from textwrap import dedent
 
 
-def create_cloud_init_disk(vm_index, vm_name):
+def fetch_ssh_keys():
+    """Fetch SSH keys once to avoid duplicate diagnostics."""
+    from pathlib import Path
+
+    # Read SSH public key
+    ssh_public_key = ""
+    try:
+        ssh_key_path = Path.home() / ".ssh" / "id_rsa.pub"
+        if ssh_key_path.exists():
+            ssh_public_key = ssh_key_path.read_text().strip()
+    except Exception as e:
+        print(f"Warning: Could not read SSH public key: {e}")
+
+    # Get GitHub username from config or use default
+    github_ssh_user = config("GITHUB_SSH_USER", default="pythoninthegrass")
+
+    # Collect all SSH keys (local + GitHub)
+    all_ssh_keys = []
+    if ssh_public_key:
+        all_ssh_keys.append(ssh_public_key)
+
+    # Fetch GitHub SSH keys if username is provided
+    if github_ssh_user:
+        try:
+            import urllib.request
+
+            with urllib.request.urlopen(f"https://github.com/{github_ssh_user}.keys") as response:
+                github_keys = response.read().decode('utf-8').strip().split('\n')
+                github_keys = [key.strip() for key in github_keys if key.strip()]
+                all_ssh_keys.extend(github_keys)
+                print(f"Fetched {len(github_keys)} GitHub SSH keys for {github_ssh_user}")
+        except Exception as e:
+            print(f"Warning: Failed to fetch GitHub SSH keys for {github_ssh_user}: {e}")
+
+    return all_ssh_keys, github_ssh_user
+
+
+def create_cloud_init_disk(vm_index, vm_name, all_ssh_keys=None, github_ssh_user=""):
     """Creates a cloud-init disk for the given VM index with static IP configuration."""
     use_jinja_templates = config("USE_JINJA_TEMPLATES", default=True, cast=bool)
 
@@ -53,35 +90,6 @@ def create_cloud_init_disk(vm_index, vm_name):
         # Use the centralized cloud-init generation with static IP
         try:
             from pathlib import Path
-
-            # Read SSH public key
-            ssh_public_key = ""
-            try:
-                ssh_key_path = Path.home() / ".ssh" / "id_rsa.pub"
-                if ssh_key_path.exists():
-                    ssh_public_key = ssh_key_path.read_text().strip()
-            except Exception as e:
-                print(f"Warning: Could not read SSH public key: {e}")
-
-            # Get GitHub username from config or use default
-            github_ssh_user = config("GITHUB_SSH_USER", default="pythoninthegrass")
-
-            # Collect all SSH keys (local + GitHub)
-            all_ssh_keys = []
-            if ssh_public_key:
-                all_ssh_keys.append(ssh_public_key)
-
-            # Fetch GitHub SSH keys if username is provided
-            if github_ssh_user:
-                try:
-                    import urllib.request
-                    with urllib.request.urlopen(f"https://github.com/{github_ssh_user}.keys") as response:
-                        github_keys = response.read().decode('utf-8').strip().split('\n')
-                        github_keys = [key.strip() for key in github_keys if key.strip()]
-                        all_ssh_keys.extend(github_keys)
-                        print(f"Fetched {len(github_keys)} GitHub SSH keys for {github_ssh_user}")
-                except Exception as e:
-                    print(f"Warning: Failed to fetch GitHub SSH keys for {github_ssh_user}: {e}")
 
             # Format SSH keys section for cloud-init with all keys
             ssh_keys_section = "ssh_authorized_keys:\n" + "\n".join(f"  - {key}" for key in all_ssh_keys) if all_ssh_keys else ""
@@ -206,6 +214,10 @@ print("===============================")
 
 # Provision the VMs with static IPs
 base_volume_name = get_base_volume()
+
+# Fetch SSH keys once to avoid duplicate diagnostics
+all_ssh_keys, github_ssh_user = fetch_ssh_keys()
+
 static_ips = []
 vms = []
 
@@ -216,7 +228,7 @@ for i in range(num_vms):
     static_ips.append(static_ip)
 
     # Create cloud-init disk with static IP configuration
-    cloud_init_disk = create_cloud_init_disk(vm_index, vm_name)
+    cloud_init_disk = create_cloud_init_disk(vm_index, vm_name, all_ssh_keys, github_ssh_user)
 
     # Create VM volume
     volume = create_volume(i, base_volume_name)
